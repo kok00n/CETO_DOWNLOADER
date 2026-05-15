@@ -1,0 +1,264 @@
+{
+  "name": "TBSP Trading PLN - Daily",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "Europe/Warsaw"
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Schedule Daily 19:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 30 19 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [340, 300],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "supabase_url",
+              "type": "string",
+              "value": "https://YOUR-PROJECT-REF.supabase.co"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "buildItem",
+      "name": "Build Fetch Item (today)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [540, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const now = new Date();\nconst warsaw = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Warsaw' }));\nconst yyyy = warsaw.getFullYear();\nconst mm = String(warsaw.getMonth() + 1).padStart(2, '0');\nconst dd = String(warsaw.getDate()).padStart(2, '0');\nconst dateIso = `${yyyy}-${mm}-${dd}`;\nconst dateParam = `${yyyy}${mm}${dd}`;\nreturn [{\n  json: {\n    trade_date: dateIso,\n    date_param: dateParam,\n    month_param: mm,\n    year_param: String(yyyy),\n    source_url: `https://www.bondspot.pl/notowania_TBSPoland?date=${dateParam}&month=${mm}&year=${yyyy}`\n  }\n}];"
+      }
+    },
+    {
+      "id": "fetchHtml",
+      "name": "Fetch TBSP HTML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, 300],
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "neverError": true
+            }
+          },
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; n8n-tbsp-scraper/1.0)"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml"
+            }
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "continueOnFail": true
+    },
+    {
+      "id": "parseHtml",
+      "name": "Parse TBSP PLN Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parse the 'PODSUMOWANIE OBROTU - OBLIGACJE PLN' table.\n// Returns ONE item per input item: {trade_date, source_url, rows, rows_count, status}.\nconst out = [];\nfor (const item of $input.all()) {\n  const meta = $('Build Fetch Item (today)').item.json;\n  const source = String(item.json.data || item.json.body || item.json.raw || '');\n\n  const parseNum = (s) => {\n    if (s === undefined || s === null) return null;\n    let t = String(s).replace(/&nbsp;/g, ' ').trim();\n    if (t === '' || t === '-' || t === '\\u2013' || t === '\\u2014') return null;\n    t = t.replace(/\\s/g, '').replace(',', '.');\n    const n = parseFloat(t);\n    return Number.isFinite(n) ? n : null;\n  };\n\n  // Locate the OBLIGACJE PLN table. In 2011 the title is just 'OBLIGACJE' (no PLN suffix).\n  const titleRx = /<th[^>]*>\\s*<strong>\\s*PODSUMOWANIE OBROTU - OBLIGACJE(?:\\s+PLN)?\\s*<\\/strong>\\s*<\\/th>/i;\n  const titleMatch = source.match(titleRx);\n  let rows = [];\n  if (titleMatch) {\n    const tableStart = titleMatch.index;\n    const tableEnd = source.indexOf('</table>', tableStart);\n    const slice = tableEnd > 0 ? source.slice(tableStart, tableEnd) : source.slice(tableStart);\n\n    const rowRegex = /<tr>\\s*<td>([^<]+)<\\/td>\\s*<td>(PL[A-Z0-9]{10})\\s*<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<\\/tr>/g;\n\n    let m;\n    while ((m = rowRegex.exec(slice)) !== null) {\n      rows.push({\n        trade_date: meta.trade_date,\n        isin: m[2].trim(),\n        name: m[1].trim(),\n        bid_price: parseNum(m[3]),\n        ask_price: parseNum(m[4]),\n        first_price: parseNum(m[5]),\n        max_price: parseNum(m[6]),\n        min_price: parseNum(m[7]),\n        last_price: parseNum(m[8]),\n        avg_price: parseNum(m[9]),\n        volume: parseNum(m[10]),\n        value_mln_pln: parseNum(m[11]),\n        trade_count: parseNum(m[12]),\n        source_url: meta.source_url\n      });\n    }\n  }\n\n  out.push({\n    json: {\n      trade_date: meta.trade_date,\n      source_url: meta.source_url,\n      rows,\n      rows_count: rows.length,\n      status: rows.length > 0 ? 'ok' : 'empty'\n    }\n  });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "ifHasRows",
+      "name": "Has Rows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1320, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "upsertTrading",
+      "name": "Upsert Trading Rows (Supabase REST)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/tbsp_trading?on_conflict=trade_date,isin",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "logOk",
+      "name": "Log scrape: ok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1840, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/tbsp_scrape_log?on_conflict=trade_date",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ trade_date: $('Parse TBSP PLN Rows').item.json.trade_date, status: 'ok', rows_count: $('Parse TBSP PLN Rows').item.json.rows_count, source_url: $('Parse TBSP PLN Rows').item.json.source_url, scraped_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "logEmpty",
+      "name": "Log scrape: empty",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/tbsp_scrape_log?on_conflict=trade_date",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ trade_date: $json.trade_date, status: 'empty', rows_count: 0, source_url: $json.source_url, scraped_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Daily 19:30": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Build Fetch Item (today)", "type": "main", "index": 0 }]]
+    },
+    "Build Fetch Item (today)": {
+      "main": [[{ "node": "Fetch TBSP HTML", "type": "main", "index": 0 }]]
+    },
+    "Fetch TBSP HTML": {
+      "main": [[{ "node": "Parse TBSP PLN Rows", "type": "main", "index": 0 }]]
+    },
+    "Parse TBSP PLN Rows": {
+      "main": [[{ "node": "Has Rows?", "type": "main", "index": 0 }]]
+    },
+    "Has Rows?": {
+      "main": [
+        [{ "node": "Upsert Trading Rows (Supabase REST)", "type": "main", "index": 0 }],
+        [{ "node": "Log scrape: empty", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Trading Rows (Supabase REST)": {
+      "main": [[{ "node": "Log scrape: ok", "type": "main", "index": 0 }]]
+    }
+  }
+}

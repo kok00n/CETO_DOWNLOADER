@@ -1,0 +1,358 @@
+{
+  "name": "TBSP Trading PLN - Backfill / Gap Filler",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "Europe/Warsaw"
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Schedule Daily 03:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 30 3 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [420, 300],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a0",
+              "name": "supabase_url",
+              "type": "string",
+              "value": "https://YOUR-PROJECT-REF.supabase.co"
+            },
+            {
+              "id": "a1",
+              "name": "from_date",
+              "type": "string",
+              "value": "2011-01-01"
+            },
+            {
+              "id": "a2",
+              "name": "max_pairs_per_run",
+              "type": "number",
+              "value": 200
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fetchMissing",
+      "name": "RPC: tbsp_missing_dates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/rpc/tbsp_missing_dates",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_from: $json.from_date, p_limit: $json.max_pairs_per_run }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "splitMissing",
+      "name": "Split Missing Dates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const inItem = $input.first().json;\nlet arr = [];\nif (Array.isArray(inItem)) arr = inItem;\nelse if (Array.isArray(inItem.data)) arr = inItem.data;\nelse if (Array.isArray(inItem.body)) arr = inItem.body;\nelse arr = $input.all().map((i) => i.json);\n\nreturn arr.map((p) => {\n  const dateIso = p.trade_date;\n  const [y, m, d] = dateIso.split('-');\n  const dateParam = `${y}${m}${d}`;\n  return {\n    json: {\n      trade_date: dateIso,\n      date_param: dateParam,\n      month_param: m,\n      year_param: y,\n      source_url: `https://www.bondspot.pl/notowania_TBSPoland?date=${dateParam}&month=${m}&year=${y}`\n    }\n  };\n});"
+      }
+    },
+    {
+      "id": "loop",
+      "name": "Loop (1 at a time)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1140, 300],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "throttle",
+      "name": "Throttle",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1380, 400],
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "fetchHtml",
+      "name": "Fetch TBSP HTML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 400],
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "neverError": true
+            }
+          },
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; n8n-tbsp-scraper/1.0)"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml"
+            }
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "continueOnFail": true
+    },
+    {
+      "id": "parseHtml",
+      "name": "Parse TBSP PLN Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1860, 400],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  const meta = $('Loop (1 at a time)').item.json;\n  const source = String(item.json.data || item.json.body || item.json.raw || '');\n\n  const parseNum = (s) => {\n    if (s === undefined || s === null) return null;\n    let t = String(s).replace(/&nbsp;/g, ' ').trim();\n    if (t === '' || t === '-' || t === '\\u2013' || t === '\\u2014') return null;\n    t = t.replace(/\\s/g, '').replace(',', '.');\n    const n = parseFloat(t);\n    return Number.isFinite(n) ? n : null;\n  };\n\n  const titleRx = /<th[^>]*>\\s*<strong>\\s*PODSUMOWANIE OBROTU - OBLIGACJE(?:\\s+PLN)?\\s*<\\/strong>\\s*<\\/th>/i;\n  const titleMatch = source.match(titleRx);\n  let rows = [];\n  if (titleMatch) {\n    const tableStart = titleMatch.index;\n    const tableEnd = source.indexOf('</table>', tableStart);\n    const slice = tableEnd > 0 ? source.slice(tableStart, tableEnd) : source.slice(tableStart);\n\n    const rowRegex = /<tr>\\s*<td>([^<]+)<\\/td>\\s*<td>(PL[A-Z0-9]{10})\\s*<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<\\/tr>/g;\n\n    let m;\n    while ((m = rowRegex.exec(slice)) !== null) {\n      rows.push({\n        trade_date: meta.trade_date,\n        isin: m[2].trim(),\n        name: m[1].trim(),\n        bid_price: parseNum(m[3]),\n        ask_price: parseNum(m[4]),\n        first_price: parseNum(m[5]),\n        max_price: parseNum(m[6]),\n        min_price: parseNum(m[7]),\n        last_price: parseNum(m[8]),\n        avg_price: parseNum(m[9]),\n        volume: parseNum(m[10]),\n        value_mln_pln: parseNum(m[11]),\n        trade_count: parseNum(m[12]),\n        source_url: meta.source_url\n      });\n    }\n  }\n\n  out.push({\n    json: {\n      trade_date: meta.trade_date,\n      source_url: meta.source_url,\n      rows,\n      rows_count: rows.length,\n      status: rows.length > 0 ? 'ok' : 'empty'\n    }\n  });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "ifHasRows",
+      "name": "Has Rows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2100, 400],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "upsertTrading",
+      "name": "Upsert Trading Rows (Supabase REST)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2340, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/tbsp_trading?on_conflict=trade_date,isin",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "logOk",
+      "name": "Log scrape: ok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2580, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/tbsp_scrape_log?on_conflict=trade_date",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ trade_date: $('Parse TBSP PLN Rows').item.json.trade_date, status: 'ok', rows_count: $('Parse TBSP PLN Rows').item.json.rows_count, source_url: $('Parse TBSP PLN Rows').item.json.source_url, scraped_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "logEmpty",
+      "name": "Log scrape: empty",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2340, 500],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/tbsp_scrape_log?on_conflict=trade_date",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ trade_date: $json.trade_date, status: 'empty', rows_count: 0, source_url: $json.source_url, scraped_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "mergeBack",
+      "name": "Merge → back to loop",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2820, 400],
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Daily 03:30": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "RPC: tbsp_missing_dates", "type": "main", "index": 0 }]]
+    },
+    "RPC: tbsp_missing_dates": {
+      "main": [[{ "node": "Split Missing Dates", "type": "main", "index": 0 }]]
+    },
+    "Split Missing Dates": {
+      "main": [[{ "node": "Loop (1 at a time)", "type": "main", "index": 0 }]]
+    },
+    "Loop (1 at a time)": {
+      "main": [
+        [],
+        [{ "node": "Throttle", "type": "main", "index": 0 }]
+      ]
+    },
+    "Throttle": {
+      "main": [[{ "node": "Fetch TBSP HTML", "type": "main", "index": 0 }]]
+    },
+    "Fetch TBSP HTML": {
+      "main": [[{ "node": "Parse TBSP PLN Rows", "type": "main", "index": 0 }]]
+    },
+    "Parse TBSP PLN Rows": {
+      "main": [[{ "node": "Has Rows?", "type": "main", "index": 0 }]]
+    },
+    "Has Rows?": {
+      "main": [
+        [{ "node": "Upsert Trading Rows (Supabase REST)", "type": "main", "index": 0 }],
+        [{ "node": "Log scrape: empty", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Trading Rows (Supabase REST)": {
+      "main": [[{ "node": "Log scrape: ok", "type": "main", "index": 0 }]]
+    },
+    "Log scrape: ok": {
+      "main": [[{ "node": "Merge → back to loop", "type": "main", "index": 0 }]]
+    },
+    "Log scrape: empty": {
+      "main": [[{ "node": "Merge → back to loop", "type": "main", "index": 1 }]]
+    },
+    "Merge → back to loop": {
+      "main": [[{ "node": "Loop (1 at a time)", "type": "main", "index": 0 }]]
+    }
+  }
+}

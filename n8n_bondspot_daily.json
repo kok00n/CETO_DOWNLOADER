@@ -1,0 +1,259 @@
+{
+  "name": "BondSpot Fixing - Daily",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "Europe/Warsaw"
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Schedule Daily 19:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 19 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [340, 300],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "supabase_url",
+              "type": "string",
+              "value": "https://YOUR-PROJECT-REF.supabase.co"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "buildItems",
+      "name": "Build Fetch Items (today x2 sessions)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [540, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build 2 items: one per fixing session, both for TODAY (Europe/Warsaw)\nconst now = new Date();\n// Use Warsaw local time components via toLocaleString trick\nconst warsaw = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Warsaw' }));\nconst yyyy = warsaw.getFullYear();\nconst mm = String(warsaw.getMonth() + 1).padStart(2, '0');\nconst dd = String(warsaw.getDate()).padStart(2, '0');\nconst dateIso = `${yyyy}-${mm}-${dd}`;\nconst dateParam = `${yyyy}${mm}${dd}`;\n\nreturn [1, 2].map((session) => ({\n  json: {\n    fixing_date: dateIso,\n    fixing_session: session,\n    date_param: dateParam,\n    month_param: String(warsaw.getMonth() + 1),\n    year_param: String(yyyy),\n    source_url: `https://www.bondspot.pl/fixing_obligacji?date=${dateParam}&month=${warsaw.getMonth() + 1}&year=${yyyy}&type=${session}`\n  }\n}));"
+      }
+    },
+    {
+      "id": "fetchHtml",
+      "name": "Fetch BondSpot HTML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 300],
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; n8n-bondspot-scraper/1.0)"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parseHtml",
+      "name": "Parse Bond Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parse the BondSpot fixing table from raw HTML.\n// Each input item already carries fixing_date / fixing_session / source_url.\n// We emit ONE output item per input item, containing the parsed rows[] array\n// plus a status field ('ok' | 'empty').\n\nconst out = [];\nfor (const item of $input.all()) {\n  const meta = item.json;\n  const html = (item.json && item.json.data) || (item.json && item.json.body) || item.json.raw || '';\n  // n8n HTTP node with responseFormat=text stores body in `data` field\n  const source = typeof html === 'string' ? html : String(html);\n\n  const parseNum = (s) => {\n    if (s === undefined || s === null) return null;\n    let t = String(s).trim();\n    if (t === '' || t === '-' || t === '\\u2013' || t === '\\u2014') return null;\n    t = t.replace(/\\s/g, '').replace(',', '.');\n    const n = parseFloat(t);\n    return Number.isFinite(n) ? n : null;\n  };\n\n  // Bond rows: LP (digit), name (free text), ISIN (PL + 10 chars), then 6 numeric cells.\n  const rowRegex = /<tr>\\s*<td>(\\d+)<\\/td>\\s*<td>([^<]+)<\\/td>\\s*<td>(PL[A-Z0-9]{10})<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<\\/tr>/g;\n\n  const rows = [];\n  let m;\n  while ((m = rowRegex.exec(source)) !== null) {\n    rows.push({\n      fixing_date: meta.fixing_date,\n      fixing_session: meta.fixing_session,\n      isin: m[3].trim(),\n      lp: parseInt(m[1], 10),\n      name: m[2].trim(),\n      bid_price: parseNum(m[4]),\n      ask_price: parseNum(m[5]),\n      bid_yield: parseNum(m[6]),\n      ask_yield: parseNum(m[7]),\n      fixing_price: parseNum(m[8]),\n      fixing_yield: parseNum(m[9]),\n      source_url: meta.source_url\n    });\n  }\n\n  out.push({\n    json: {\n      fixing_date: meta.fixing_date,\n      fixing_session: meta.fixing_session,\n      source_url: meta.source_url,\n      rows,\n      rows_count: rows.length,\n      status: rows.length > 0 ? 'ok' : 'empty'\n    }\n  });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "ifHasRows",
+      "name": "Has Rows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1220, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "upsertFixing",
+      "name": "Upsert Fixing Rows (Supabase REST)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1480, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/bondspot_fixing?on_conflict=fixing_date,fixing_session,isin",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "logOk",
+      "name": "Log scrape: ok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/bondspot_scrape_log?on_conflict=fixing_date,fixing_session",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fixing_date: $('Parse Bond Rows').item.json.fixing_date, fixing_session: $('Parse Bond Rows').item.json.fixing_session, status: 'ok', rows_count: $('Parse Bond Rows').item.json.rows_count, source_url: $('Parse Bond Rows').item.json.source_url, scraped_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "logEmpty",
+      "name": "Log scrape: empty",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1480, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.supabase_url }}/rest/v1/bondspot_scrape_log?on_conflict=fixing_date,fixing_session",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fixing_date: $json.fixing_date, fixing_session: $json.fixing_session, status: 'empty', rows_count: 0, source_url: $json.source_url, scraped_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Daily 19:00": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Build Fetch Items (today x2 sessions)", "type": "main", "index": 0 }]]
+    },
+    "Build Fetch Items (today x2 sessions)": {
+      "main": [[{ "node": "Fetch BondSpot HTML", "type": "main", "index": 0 }]]
+    },
+    "Fetch BondSpot HTML": {
+      "main": [[{ "node": "Parse Bond Rows", "type": "main", "index": 0 }]]
+    },
+    "Parse Bond Rows": {
+      "main": [[{ "node": "Has Rows?", "type": "main", "index": 0 }]]
+    },
+    "Has Rows?": {
+      "main": [
+        [{ "node": "Upsert Fixing Rows (Supabase REST)", "type": "main", "index": 0 }],
+        [{ "node": "Log scrape: empty", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Fixing Rows (Supabase REST)": {
+      "main": [[{ "node": "Log scrape: ok", "type": "main", "index": 0 }]]
+    }
+  }
+}
