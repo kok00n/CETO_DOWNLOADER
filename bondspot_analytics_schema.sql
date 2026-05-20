@@ -9,8 +9,12 @@
 -- MIGRACJA: jesli wczesniej miales bondspot_analytics z fixing_session w PK,
 -- ten plik DROPnie ja i odtworzy w nowej strukturze - poprzednie wpisy znikna,
 -- ale compute_analytics.py je uzupelni przy nastepnym uruchomieniu.
+-- Funkcja bondspot_missing_analytics tez zmienila sygnature (brak fixing_session
+-- w zwracanych kolumnach) - Postgres nie pozwala zmienic return type przez
+-- CREATE OR REPLACE, trzeba najpierw DROP.
 
 DROP TABLE IF EXISTS bondspot_analytics CASCADE;
+DROP FUNCTION IF EXISTS bondspot_missing_analytics(INT);
 
 -- =====================================================================
 --  BOND SPECS - dane statyczne, refreshowane z MF Obligacje_Hurtowe.xlsm
