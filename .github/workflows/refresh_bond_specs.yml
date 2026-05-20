@@ -1,4 +1,4 @@
-name: Refresh bond_specs from MF XLSM
+name: Refresh MF data (bond_specs + bond_outstanding)
 
 on:
   schedule:
@@ -10,13 +10,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: refresh-bond-specs
+  group: refresh-mf-data
   cancel-in-progress: false
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -28,8 +28,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run refresh_bond_specs.py
+      - name: Refresh bond_specs (static bond data)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python scripts/refresh_bond_specs.py
+
+      - name: Refresh bond_outstanding (issuance history)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/refresh_bond_outstanding.py

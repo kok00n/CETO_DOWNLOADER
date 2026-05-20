@@ -1,27 +1,21 @@
 """Refresh bond_specs from the MF 'Obligacje hurtowe' XLSM.
 
 Source: https://www.gov.pl/web/finanse/bony-i-obligacje-hurtowe1
-The XLSM URL contains a UUID attachment id that may change between updates,
-so we scrape the page each run to find the current link.
 """
 
 from __future__ import annotations
 
-import re
 import sys
 from io import BytesIO
 from pathlib import Path
 
 import openpyxl
-import requests
 
 # allow `python scripts/refresh_bond_specs.py` from repo root
 sys.path.insert(0, str(Path(__file__).parent))
+from lib.mf_xlsm import download_xlsm, find_xlsm_url  # noqa: E402
 from lib.supabase import upsert  # noqa: E402
 
-
-MF_PAGE_URL = "https://www.gov.pl/web/finanse/bony-i-obligacje-hurtowe1"
-USER_AGENT = "Mozilla/5.0 (compatible; bondspot-analytics/1.0)"
 
 # Coupon frequency per series prefix.
 # Sources: BondSpot TBSP_instruments docs + MF rozporzadzenie.
@@ -38,41 +32,6 @@ PREFIX_FREQ: dict[str, int] = {
     # POLSTR compound floaters (in arrears) - tentative quarterly
     "NZ": 4,
 }
-
-
-def find_xlsm_url() -> str:
-    r = requests.get(MF_PAGE_URL, headers={"User-Agent": USER_AGENT}, timeout=30)
-    r.raise_for_status()
-    html = r.text
-
-    # The page renders attachment links like:
-    #   <a class="file-download" href="/attachment/UUID" ... download
-    #      aria-label="Pobierz plik Baza transakcji - obligacje hurtowe ...">
-    pattern = re.compile(
-        r'href="(/attachment/[a-f0-9-]+)"[^>]*download[^>]*'
-        r'aria-label="[^"]*obligacje hurtowe[^"]*"',
-        re.IGNORECASE | re.DOTALL,
-    )
-    m = pattern.search(html)
-    if not m:
-        # Fallback: locate by filename mentioned later in the link block
-        pattern2 = re.compile(
-            r'href="(/attachment/[a-f0-9-]+)"[^>]*download[\s\S]{0,400}?Obligacje[_​]*Hurtowe\.xlsm',
-            re.IGNORECASE,
-        )
-        m = pattern2.search(html)
-    if not m:
-        raise RuntimeError(
-            "Could not find Obligacje_Hurtowe.xlsm link on MF page. "
-            "The page structure may have changed."
-        )
-    return "https://www.gov.pl" + m.group(1)
-
-
-def download_xlsm(url: str) -> BytesIO:
-    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=120)
-    r.raise_for_status()
-    return BytesIO(r.content)
 
 
 def parse_specs(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
