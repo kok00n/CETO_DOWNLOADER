@@ -148,8 +148,15 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
         # WIBOR/POLSTR fixings in the DB yet -> set Mod = Mac.
         mac, mod = atr_y, atr_y
     else:
+        # For inflation-linked (IZ): BondSpot doesn't quote nominal YTM
+        # because the yield concept splits into real yield + breakeven
+        # inflation. Standard practitioner approximation when real yield
+        # is unavailable: use coupon_rate as YTM (gives par-equivalent
+        # Mac/Mod which matches typical IZ trading near par). When we
+        # later add CPI + real-yield data, this can be tightened.
+        effective_ytm = ytm if ytm is not None else coupon_rate
         mac, mod = macaulay_modified_duration(
-            f_date, m_date, i_date, coupon_rate, freq, ytm
+            f_date, m_date, i_date, coupon_rate, freq, effective_ytm
         )
 
     return {
