@@ -3,7 +3,14 @@
 --
 -- Dwie nowe tabele:
 --   bond_specs           - dane statyczne obligacji (kupon, terminy, typ) z MF XLSM
---   bondspot_analytics   - wyliczone metryki per (data, sesja, ISIN)
+--   bondspot_analytics   - wyliczone metryki per (data, ISIN) - jeden wpis per dzien
+--                          (uzywamy fixing 2 = EOD jako zrodla YTM)
+--
+-- MIGRACJA: jesli wczesniej miales bondspot_analytics z fixing_session w PK,
+-- ten plik DROPnie ja i odtworzy w nowej strukturze - poprzednie wpisy znikna,
+-- ale compute_analytics.py je uzupelni przy nastepnym uruchomieniu.
+
+DROP TABLE IF EXISTS bondspot_analytics CASCADE;
 
 -- =====================================================================
 --  BOND SPECS - dane statyczne, refreshowane z MF Obligacje_Hurtowe.xlsm
@@ -34,11 +41,11 @@ CREATE TRIGGER trg_bond_specs_updated_at
     EXECUTE FUNCTION bondspot_set_updated_at();
 
 -- =====================================================================
---  BONDSPOT ANALYTICS - wyliczane metryki per fixing
+--  BONDSPOT ANALYTICS - wyliczane metryki per (data, ISIN)
+--  Jeden wpis na dzien - zrodlem YTM jest fixing_session = 2 (EOD).
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS bondspot_analytics (
     fixing_date     DATE         NOT NULL,
-    fixing_session  SMALLINT     NOT NULL CHECK (fixing_session IN (1, 2)),
     isin            VARCHAR(12)  NOT NULL,
     bond_type       TEXT,
     atm_years       NUMERIC(8,4),    -- Average Time to Maturity (lata)
@@ -46,37 +53,34 @@ CREATE TABLE IF NOT EXISTS bondspot_analytics (
     mac_duration    NUMERIC(8,4),    -- Macaulay Duration (lata)  - NULL dla floaterow
     mod_duration    NUMERIC(8,4),    -- Modified Duration (lata)  - NULL dla floaterow
     computed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (fixing_date, fixing_session, isin),
-    FOREIGN KEY (fixing_date, fixing_session, isin)
-        REFERENCES bondspot_fixing (fixing_date, fixing_session, isin)
-        ON DELETE CASCADE
+    PRIMARY KEY (fixing_date, isin)
 );
 
 CREATE INDEX IF NOT EXISTS idx_bondspot_analytics_isin_date
     ON bondspot_analytics (isin, fixing_date DESC);
 
 -- =====================================================================
---  RPC: brakujace metryki - fixingi bez wpisu w analytics
+--  RPC: brakujace metryki - dni z fixingiem 2 (EOD) bez wpisu w analytics.
 --  Uzywane przez compute_analytics.py do incremental compute.
+--  Bierzemy wylacznie fixing_session=2 zeby nie liczyc 2x tego samego dnia.
 -- =====================================================================
 CREATE OR REPLACE FUNCTION bondspot_missing_analytics(
     p_limit  INT DEFAULT 100000
 )
 RETURNS TABLE (
     fixing_date     DATE,
-    fixing_session  SMALLINT,
     isin            VARCHAR,
     fixing_yield    NUMERIC
 )
 LANGUAGE sql STABLE AS $$
-    SELECT f.fixing_date, f.fixing_session, f.isin, f.fixing_yield
+    SELECT f.fixing_date, f.isin, f.fixing_yield
     FROM bondspot_fixing f
     LEFT JOIN bondspot_analytics a
       ON a.fixing_date = f.fixing_date
-     AND a.fixing_session = f.fixing_session
      AND a.isin = f.isin
-    WHERE a.fixing_date IS NULL
-    ORDER BY f.fixing_date ASC, f.fixing_session ASC, f.isin ASC
+    WHERE f.fixing_session = 2
+      AND a.fixing_date IS NULL
+    ORDER BY f.fixing_date ASC, f.isin ASC
     LIMIT p_limit;
 $$;
 
@@ -100,12 +104,12 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- =====================================================================
---  WIDOK: czytelny join fixingu + analytics + spec (do dashboardu)
+--  WIDOK: czytelny join EOD-fixingu (sesja 2) + analytics + spec.
+--  Dla raportow analitycznych i dashboardu - 1 wiersz per (dzien, ISIN).
 -- =====================================================================
 CREATE OR REPLACE VIEW v_bondspot_full AS
 SELECT
     f.fixing_date,
-    f.fixing_session,
     f.isin,
     f.name,
     s.bond_type,
@@ -124,5 +128,5 @@ FROM bondspot_fixing f
 LEFT JOIN bond_specs s ON s.isin = f.isin
 LEFT JOIN bondspot_analytics a
     ON a.fixing_date = f.fixing_date
-   AND a.fixing_session = f.fixing_session
-   AND a.isin = f.isin;
+   AND a.isin = f.isin
+WHERE f.fixing_session = 2;

@@ -117,7 +117,8 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
     """Combine ATM/ATR/Mac/Mod into a single analytics record.
 
     spec  -- row from bond_specs (dict)
-    fixing -- row from bondspot_fixing (dict): fixing_date, fixing_session, isin, fixing_yield
+    fixing -- row from bondspot_fixing (dict): fixing_date, isin, fixing_yield
+              (only fixing_session=2 is used upstream; one record per day)
     """
     f_date = _to_date(fixing["fixing_date"])
     m_date = _to_date(spec["maturity_date"])
@@ -147,7 +148,6 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
 
     return {
         "fixing_date": fixing["fixing_date"],
-        "fixing_session": fixing["fixing_session"],
         "isin": fixing["isin"],
         "bond_type": spec.get("bond_type"),
         "atm_years": round(atm_y, 4),

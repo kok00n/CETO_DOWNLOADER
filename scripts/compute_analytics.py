@@ -68,7 +68,7 @@ def main() -> None:
             upsert(
                 "bondspot_analytics",
                 out,
-                on_conflict="fixing_date,fixing_session,isin",
+                on_conflict="fixing_date,isin",
                 batch_size=1000,
             )
 
