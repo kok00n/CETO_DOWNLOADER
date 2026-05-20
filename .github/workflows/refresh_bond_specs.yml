@@ -2,8 +2,11 @@ name: Refresh MF data (bond_specs + bond_outstanding)
 
 on:
   schedule:
-    # Poniedzialek 06:00 UTC = 07:00 (CET) / 08:00 (CEST)
-    - cron: '0 6 * * 1'
+    # Codziennie pon-pt o 06:00 UTC = 07:00 (CET) / 08:00 (CEST).
+    # MF aktualizuje XLSM po przetargach (zwykle wtorki/srody) z 1-dniowym
+    # opoznieniem; codzienny refresh laczy zarowno nowe specs jak i swieze
+    # outstanding w 24h od kazdej operacji.
+    - cron: '0 6 * * 1-5'
   workflow_dispatch: {}
 
 permissions:

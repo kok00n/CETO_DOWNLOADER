@@ -1,23 +1,30 @@
 """Refresh bond_outstanding from the MF 'Obligacje hurtowe' XLSM.
 
 Algorithm:
-  1. Read Operacje sheet (every wholesale-bond auction/buyback since 1994)
-  2. For each (isin, settlement_date): sum signed deltas
-     (TypTransakcji='S' = +sale_amount, 'O' = -buyback_amount)
-  3. Per ISIN, sort by settlement date, compute running balance
+  1. Read Operacje sheet (every wholesale-bond auction/buyback since 1994).
+     MF encodes sign in the amount itself: sales positive, buybacks negative.
+  2. For each (isin, settlement_date): sum signed amounts.
+  3. Per ISIN, sort by settlement date, compute running balance.
   4. Add a synthetic 'redemption' entry on each bond's DataWykupu (maturity)
      with delta = -final_balance, balance = 0 (so post-maturity queries
-     correctly return 0 outstanding)
-  5. Upsert to bond_outstanding
+     correctly return 0 outstanding).
+  5. Reconcile against the Zadluzenie sheet (snapshot of currently outstanding
+     debt per active ISIN, ground-truth as of a specific date listed in the
+     sheet header). Where our forward reconstruction disagrees with the
+     snapshot, append a 'reconciliation' entry at the snapshot date with the
+     delta needed to match. Historical balances stay reconstructed; current
+     snapshot becomes consistent with MF's own truth.
+  6. Upsert to bond_outstanding.
 
 Amounts are in PLN mln (zgodnie z konwencja MF).
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -26,6 +33,9 @@ import openpyxl
 sys.path.insert(0, str(Path(__file__).parent))
 from lib.mf_xlsm import download_xlsm, find_xlsm_url  # noqa: E402
 from lib.supabase import upsert  # noqa: E402
+
+
+_SNAPSHOT_DATE_RX = re.compile(r"stanu\s+na\s+(\d{2})\.(\d{2})\.(\d{4})", re.IGNORECASE)
 
 
 def _to_date(value) -> date | None:
@@ -45,6 +55,47 @@ def _to_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def parse_zadluzenie(xlsm_bytes: BytesIO) -> tuple[dict[str, float], date | None]:
+    """Parse the 'Zadluzenie' sheet: snapshot of current outstanding per ISIN.
+
+    Returns (balances_by_isin, snapshot_date).  Snapshot date is parsed from
+    a header cell like "Zadluzenie (lacznie) wedlug stanu na 15.05.2026 roku ="
+    and falls back to None if not found.
+    """
+    wb = openpyxl.load_workbook(xlsm_bytes, read_only=True, data_only=True, keep_vba=False)
+    ws = wb["Zadłużenie"]
+
+    snapshot_date: date | None = None
+    balances: dict[str, float] = {}
+
+    for row in ws.iter_rows(values_only=True):
+        if not row:
+            continue
+        # Try to extract snapshot date from any text cell at the start
+        first = row[0]
+        if isinstance(first, str) and snapshot_date is None:
+            m = _SNAPSHOT_DATE_RX.search(first)
+            if m:
+                dd, mm, yyyy = m.groups()
+                try:
+                    snapshot_date = date(int(yyyy), int(mm), int(dd))
+                except ValueError:
+                    pass
+
+        # Bond rows have shape: Seria, DataWykupu, KodISIN, Kupon, PLN_mln, ...
+        if len(row) >= 5 and isinstance(row[2], str) and row[2].startswith("PL"):
+            isin = row[2].strip()
+            bal = row[4]
+            if bal is None:
+                continue
+            try:
+                balances[isin] = float(bal)
+            except (TypeError, ValueError):
+                continue
+
+    return balances, snapshot_date
 
 
 def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
@@ -82,20 +133,25 @@ def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
         if mat:
             maturity_by_isin[isin] = mat
 
-    # Step 2: per ISIN, sort dates, compute running balance, add redemption
+    # Step 2: parse Zadluzenie snapshot for reconciliation truth
+    xlsm_bytes.seek(0)
+    zad_balances, snapshot_date = parse_zadluzenie(xlsm_bytes)
+    if snapshot_date is None:
+        print("  ! WARN: snapshot date not found in Zadluzenie header - "
+              "reconciliation will be skipped", flush=True)
+
+    # Step 3: per ISIN, sort dates, compute running balance, then reconcile
+    #         against Zadluzenie, then add redemption at maturity
     rows: list[dict] = []
     for isin, by_date in deltas.items():
-        balance = 0.0
         sorted_dates = sorted(by_date.keys())
-        last_change_date = sorted_dates[-1] if sorted_dates else None
+        balance = 0.0
+        balance_at_snapshot: float | None = None
         for cd in sorted_dates:
             delta = by_date[cd]
             balance += delta
             kinds = op_kinds[isin][cd]
-            if len(kinds) == 1:
-                op_type = next(iter(kinds))
-            else:
-                op_type = "mixed"
+            op_type = next(iter(kinds)) if len(kinds) == 1 else "mixed"
             rows.append({
                 "isin": isin,
                 "change_date": cd.isoformat(),
@@ -104,20 +160,63 @@ def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
                 "op_type": op_type,
                 "source_url": source_url,
             })
+            if snapshot_date and cd <= snapshot_date:
+                balance_at_snapshot = balance
 
-        # Synthetic redemption row on maturity (only if balance still positive
-        # and maturity is AFTER the last recorded change; otherwise the bond
-        # was fully bought back early or maturity already encoded somewhere).
+        last_change_date = sorted_dates[-1] if sorted_dates else None
         mat = maturity_by_isin.get(isin)
-        if mat and balance > 0.001 and (last_change_date is None or mat > last_change_date):
-            rows.append({
-                "isin": isin,
-                "change_date": mat.isoformat(),
-                "delta_mln_pln": -round(balance, 3),
-                "balance_mln_pln": 0.0,
-                "op_type": "redemption",
-                "source_url": source_url,
-            })
+
+        # Step 3a: reconciliation entry at snapshot_date.
+        # Two cases reconcile:
+        #   - bond is in Zadluzenie -> use zad balance as target
+        #   - bond is NOT in Zadluzenie but our calc says active and maturity
+        #     is in future -> bond was extinguished early; target = 0
+        if snapshot_date and last_change_date and snapshot_date >= sorted_dates[0]:
+            target: float | None = zad_balances.get(isin)
+            if target is None and balance > 0.001 and mat and mat > snapshot_date:
+                target = 0.0
+            if target is not None and balance_at_snapshot is not None:
+                diff = target - balance_at_snapshot
+                if abs(diff) > 0.005:
+                    recon_date = snapshot_date
+                    # avoid PK clash with real op on same date
+                    if recon_date in by_date:
+                        recon_date = recon_date + timedelta(days=1)
+                    rows.append({
+                        "isin": isin,
+                        "change_date": recon_date.isoformat(),
+                        "delta_mln_pln": round(diff, 3),
+                        "balance_mln_pln": round(target, 3),
+                        "op_type": "reconciliation",
+                        "source_url": source_url,
+                    })
+                    balance = target  # update for redemption check below
+
+        # Step 3b: synthetic redemption row at maturity if final balance
+        # still > 0. If maturity coincides with the last recorded op
+        # (typical for zero-coupon bonds: last KZ op settled on maturity
+        # day), push redemption to mat+1 - bond is alive on its maturity
+        # day, redeemed EOD.
+        if mat and balance > 0.001:
+            last_rec = max(
+                (date.fromisoformat(r["change_date"]) for r in rows if r["isin"] == isin),
+                default=None,
+            )
+            if last_rec is None or mat > last_rec:
+                redemption_date = mat
+            elif mat == last_rec:
+                redemption_date = mat + timedelta(days=1)
+            else:
+                redemption_date = None  # maturity before last op (shouldn't happen)
+            if redemption_date is not None:
+                rows.append({
+                    "isin": isin,
+                    "change_date": redemption_date.isoformat(),
+                    "delta_mln_pln": -round(balance, 3),
+                    "balance_mln_pln": 0.0,
+                    "op_type": "redemption",
+                    "source_url": source_url,
+                })
 
     return rows
 
