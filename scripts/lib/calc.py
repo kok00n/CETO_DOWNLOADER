@@ -225,6 +225,11 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
     ytm = float(raw_ytm) / 100.0 if raw_ytm is not None else None
     raw_price = fixing.get("fixing_price")
     price = float(raw_price) if raw_price is not None else None
+    # short_rate_proxy (decimal, e.g. 0.0356 = 3.56%) comes from the RPC:
+    # AVG(fixing_yield) over fixed-coupon bonds on the same fixing_date.
+    # Best available proxy for "current short rate" without WIBOR ingestion.
+    raw_proxy = fixing.get("short_rate_proxy")
+    short_rate_proxy = float(raw_proxy) / 100.0 if raw_proxy is not None else None
 
     atm_y = atm(f_date, m_date)
     atr_y = atr(f_date, m_date, i_date, is_floating, freq)
@@ -232,11 +237,17 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
     if is_floating:
         # Floaters (WZ/NZ): at each reset the bond reprices to par, so the
         # full rate sensitivity is concentrated in the time to next coupon
-        # reset. Mac Duration = time to next reset = ATR. Mod Duration would
-        # be Mac / (1 + r/freq) but for sub-6M intervals at current rates
-        # the discount factor differs from Mac by <0.1%, and we don't have
-        # WIBOR/POLSTR fixings in the DB yet -> set Mod = Mac.
-        mac, mod = atr_y, atr_y
+        # reset. Mac Duration = time to next reset = ATR.
+        #
+        # Mod Duration = Mac / (1 + y/freq) by definition. Without WIBOR/
+        # POLSTR data we use the same-date avg YTM of fixed-coupon bonds
+        # as a short-rate proxy. Adjustment magnitude is small (0.25-2.5%
+        # of Mac for typical sub-6M ATR values), but honest about the
+        # formula rather than collapsing Mod = Mac. Fallback 5% if proxy
+        # unavailable (e.g. early backfill before any fixed bonds priced).
+        mac = atr_y
+        y_proxy = short_rate_proxy if short_rate_proxy is not None else 0.05
+        mod = mac / (1 + y_proxy / freq) if freq else mac
     else:
         # Fixed-coupon / IZ / OK: prefer BondSpot's quoted YTM. If missing
         # (typically IZ - BondSpot doesn't quote nominal yield for linkers

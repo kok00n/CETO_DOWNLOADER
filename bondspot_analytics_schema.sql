@@ -69,24 +69,40 @@ CREATE INDEX IF NOT EXISTS idx_bondspot_analytics_isin_date
 --  RPC: brakujace metryki - dni z fixingiem 2 (EOD) bez wpisu w analytics.
 --  Uzywane przez compute_analytics.py do incremental compute.
 --  Bierzemy wylacznie fixing_session=2 zeby nie liczyc 2x tego samego dnia.
---  Zwraca tez fixing_price - potrzebne do back-solve YTM dla IZ (BondSpot
---  nie quotuje nominal yield dla linkerow).
+--
+--  Zwracane pola:
+--    fixing_yield     - quoted YTM (NULL dla WZ/IZ ktorych BondSpot nie quotuje)
+--    fixing_price     - clean price, uzywane do back-solve YTM dla IZ
+--    short_rate_proxy - AVG(fixing_yield) ze stalokuponowych obligacji na te
+--                        sama date (proxy dla short rate gdy WIBOR niedostepny;
+--                        floatery uzywaja tego do Mod = Mac / (1 + proxy/freq))
 -- =====================================================================
 CREATE OR REPLACE FUNCTION bondspot_missing_analytics(
     p_limit  INT DEFAULT 100000
 )
 RETURNS TABLE (
-    fixing_date     DATE,
-    isin            VARCHAR,
-    fixing_yield    NUMERIC,
-    fixing_price    NUMERIC
+    fixing_date      DATE,
+    isin             VARCHAR,
+    fixing_yield     NUMERIC,
+    fixing_price     NUMERIC,
+    short_rate_proxy NUMERIC
 )
 LANGUAGE sql STABLE AS $$
-    SELECT f.fixing_date, f.isin, f.fixing_yield, f.fixing_price
+    WITH proxy AS (
+        SELECT
+            fp.fixing_date,
+            AVG(fp.fixing_yield) AS avg_y
+        FROM bondspot_fixing fp
+        WHERE fp.fixing_session = 2
+          AND fp.fixing_yield IS NOT NULL
+        GROUP BY fp.fixing_date
+    )
+    SELECT f.fixing_date, f.isin, f.fixing_yield, f.fixing_price, p.avg_y
     FROM bondspot_fixing f
     LEFT JOIN bondspot_analytics a
       ON a.fixing_date = f.fixing_date
      AND a.isin = f.isin
+    LEFT JOIN proxy p ON p.fixing_date = f.fixing_date
     WHERE f.fixing_session = 2
       AND a.fixing_date IS NULL
     ORDER BY f.fixing_date ASC, f.isin ASC
