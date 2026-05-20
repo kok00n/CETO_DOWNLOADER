@@ -1,0 +1,41 @@
+name: Compute BondSpot analytics
+
+on:
+  schedule:
+    # Codziennie 20:30 UTC - ok. godzine po daily BondSpot scraperze
+    - cron: '30 20 * * *'
+  workflow_dispatch:
+    inputs:
+      max_rows:
+        description: 'Max rows per run (override MAX_ROWS_PER_RUN)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compute-analytics
+  cancel-in-progress: false
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run compute_analytics.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MAX_ROWS_PER_RUN: ${{ inputs.max_rows || '200000' }}
+        run: python scripts/compute_analytics.py

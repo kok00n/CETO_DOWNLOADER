@@ -52,13 +52,13 @@
               "id": "a2",
               "name": "max_pairs_per_run",
               "type": "number",
-              "value": 200
+              "value": 500
             },
             {
               "id": "a3",
               "name": "throttle_ms",
               "type": "number",
-              "value": 1000
+              "value": 500
             }
           ]
         },
@@ -122,8 +122,8 @@
       "typeVersion": 1.1,
       "position": [1380, 400],
       "parameters": {
-        "amount": 1,
-        "unit": "seconds"
+        "amount": "={{ $('Config').first().json.throttle_ms }}",
+        "unit": "ms"
       }
     },
     {
@@ -137,10 +137,11 @@
         "options": {
           "response": {
             "response": {
-              "responseFormat": "text"
+              "responseFormat": "text",
+              "neverError": true
             }
           },
-          "timeout": 30000,
+          "timeout": 60000,
           "redirect": {
             "redirect": {
               "followRedirects": true
@@ -160,7 +161,11 @@
             }
           ]
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "continueOnFail": true
     },
     {
       "id": "parseHtml",
@@ -171,7 +176,8 @@
       "parameters": {
         "language": "javaScript",
         "jsCode": "// Mirrors the parser in the daily workflow.\nconst out = [];\nfor (const item of $input.all()) {\n  // We need original meta (fixing_date, fixing_session, source_url) - get it from the previous \"Loop\" iteration via $('Loop (1 at a time)').item.json\n  const meta = $('Loop (1 at a time)').item.json;\n  const source = String(item.json.data || item.json.body || item.json.raw || '');\n\n  const parseNum = (s) => {\n    if (s === undefined || s === null) return null;\n    let t = String(s).trim();\n    if (t === '' || t === '-' || t === '\\u2013' || t === '\\u2014') return null;\n    t = t.replace(/\\s/g, '').replace(',', '.');\n    const n = parseFloat(t);\n    return Number.isFinite(n) ? n : null;\n  };\n\n  const rowRegex = /<tr>\\s*<td>(\\d+)<\\/td>\\s*<td>([^<]+)<\\/td>\\s*<td>(PL[A-Z0-9]{10})<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<td[^>]*>([^<]*)<\\/td>\\s*<\\/tr>/g;\n\n  const rows = [];\n  let m;\n  while ((m = rowRegex.exec(source)) !== null) {\n    rows.push({\n      fixing_date: meta.fixing_date,\n      fixing_session: meta.fixing_session,\n      isin: m[3].trim(),\n      lp: parseInt(m[1], 10),\n      name: m[2].trim(),\n      bid_price: parseNum(m[4]),\n      ask_price: parseNum(m[5]),\n      bid_yield: parseNum(m[6]),\n      ask_yield: parseNum(m[7]),\n      fixing_price: parseNum(m[8]),\n      fixing_yield: parseNum(m[9]),\n      source_url: meta.source_url\n    });\n  }\n\n  out.push({\n    json: {\n      fixing_date: meta.fixing_date,\n      fixing_session: meta.fixing_session,\n      source_url: meta.source_url,\n      rows,\n      rows_count: rows.length,\n      status: rows.length > 0 ? 'ok' : 'empty'\n    }\n  });\n}\nreturn out;"
-      }
+      },
+      "continueOnFail": true
     },
     {
       "id": "ifHasRows",
@@ -231,7 +237,11 @@
         "options": {
           "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
     },
     {
       "id": "logOk",
@@ -263,7 +273,11 @@
         "options": {
           "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
     },
     {
       "id": "logEmpty",
@@ -295,7 +309,11 @@
         "options": {
           "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
     },
     {
       "id": "mergeBack",
