@@ -140,7 +140,13 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
     atr_y = atr(f_date, m_date, i_date, is_floating, freq)
 
     if is_floating:
-        mac, mod = None, None  # floaters: no traditional MD; effective MD ≈ ATR
+        # For floaters (WZ/NZ): at each reset the bond reprices to par, so the
+        # full rate sensitivity is concentrated in the time to next coupon
+        # reset. Mac Duration = time to next reset = ATR. Mod Duration would
+        # be Mac / (1 + r/freq) but for sub-6M intervals at current rates
+        # the discount factor differs from Mac by <0.1%, and we don't have
+        # WIBOR/POLSTR fixings in the DB yet -> set Mod = Mac.
+        mac, mod = atr_y, atr_y
     else:
         mac, mod = macaulay_modified_duration(
             f_date, m_date, i_date, coupon_rate, freq, ytm

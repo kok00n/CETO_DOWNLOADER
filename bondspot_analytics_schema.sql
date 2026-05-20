@@ -54,8 +54,8 @@ CREATE TABLE IF NOT EXISTS bondspot_analytics (
     bond_type       TEXT,
     atm_years       NUMERIC(8,4),    -- Average Time to Maturity (lata)
     atr_years       NUMERIC(8,4),    -- Average Time to Refixing  (lata)
-    mac_duration    NUMERIC(8,4),    -- Macaulay Duration (lata)  - NULL dla floaterow
-    mod_duration    NUMERIC(8,4),    -- Modified Duration (lata)  - NULL dla floaterow
+    mac_duration    NUMERIC(8,4),    -- Macaulay Duration (lata); dla floaterow == ATR (time to next reset)
+    mod_duration    NUMERIC(8,4),    -- Modified Duration (lata); dla floaterow ~ ATR
     computed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (fixing_date, isin)
 );
