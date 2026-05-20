@@ -63,6 +63,93 @@ def atr(
     return years_between(fixing_date, future[0])
 
 
+def accrued_interest(
+    fixing_date: date,
+    issue_date: date | None,
+    maturity_date: date,
+    coupon_rate: float | None,
+    freq: int | None,
+    face: float = 100.0,
+) -> float:
+    """Accrued interest from last coupon to fixing_date, ACT/365.25 simplified.
+
+    Works for any freq: annual_rate * face * fraction_of_year_since_last_coupon
+    naturally gives the right amount regardless of payment frequency.
+    """
+    if not freq or freq <= 0 or coupon_rate is None:
+        return 0.0
+    coupons = generate_coupon_dates(issue_date, maturity_date, freq)
+    past = [c for c in coupons if c <= fixing_date]
+    last = past[-1] if past else (issue_date or coupons[0])
+    if last is None:
+        return 0.0
+    days_since = (fixing_date - last).days
+    if days_since <= 0:
+        return 0.0
+    return coupon_rate * face * (days_since / 365.25)
+
+
+def solve_ytm(
+    clean_price: float,
+    fixing_date: date,
+    issue_date: date | None,
+    maturity_date: date,
+    coupon_rate: float,
+    freq: int,
+    face: float = 100.0,
+) -> float | None:
+    """Bisection solver: find y such that dirty_price == sum(CF_t / (1+y/freq)^(t*freq)).
+
+    Returns None if a bracket couldn't be found or solver didn't converge.
+    """
+    if freq <= 0 or coupon_rate is None or clean_price is None:
+        return None
+
+    coupons = generate_coupon_dates(issue_date, maturity_date, freq)
+    future = [c for c in coupons if c > fixing_date]
+    if not future:
+        return None
+
+    cpn = coupon_rate * face / freq
+    ai = accrued_interest(fixing_date, issue_date, maturity_date, coupon_rate, freq, face)
+    dirty = clean_price + ai
+
+    def pv(y: float) -> float:
+        total = 0.0
+        for cf_date in future:
+            t = years_between(fixing_date, cf_date)
+            cf = cpn + (face if cf_date == maturity_date else 0.0)
+            total += cf / (1 + y / freq) ** (t * freq)
+        return total
+
+    lo, hi = -0.20, 0.50
+    pv_lo, pv_hi = pv(lo), pv(hi)
+    # extend bracket if needed (rare, e.g. junk-yield territory)
+    tries = 0
+    while pv_lo < dirty and tries < 5:
+        lo -= 0.20
+        pv_lo = pv(lo)
+        tries += 1
+    tries = 0
+    while pv_hi > dirty and tries < 5:
+        hi += 0.50
+        pv_hi = pv(hi)
+        tries += 1
+    if not (pv_lo >= dirty >= pv_hi):
+        return None  # couldn't bracket
+
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        pv_mid = pv(mid)
+        if pv_mid > dirty:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-9:
+            break
+    return 0.5 * (lo + hi)
+
+
 def macaulay_modified_duration(
     fixing_date: date,
     maturity_date: date,
@@ -116,9 +203,10 @@ def macaulay_modified_duration(
 def compute_metrics(spec: dict, fixing: dict) -> dict | None:
     """Combine ATM/ATR/Mac/Mod into a single analytics record.
 
-    spec  -- row from bond_specs (dict)
-    fixing -- row from bondspot_fixing (dict): fixing_date, isin, fixing_yield
-              (only fixing_session=2 is used upstream; one record per day)
+    spec   -- row from bond_specs (dict)
+    fixing -- row from bondspot_fixing (dict): fixing_date, isin, fixing_yield,
+              fixing_price. Only fixing_session=2 is used upstream
+              (one record per day).
     """
     f_date = _to_date(fixing["fixing_date"])
     m_date = _to_date(spec["maturity_date"])
@@ -135,12 +223,14 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
     raw_ytm = fixing.get("fixing_yield")
     # BondSpot publishes yield in percent (e.g. 3.56 means 3.56%).
     ytm = float(raw_ytm) / 100.0 if raw_ytm is not None else None
+    raw_price = fixing.get("fixing_price")
+    price = float(raw_price) if raw_price is not None else None
 
     atm_y = atm(f_date, m_date)
     atr_y = atr(f_date, m_date, i_date, is_floating, freq)
 
     if is_floating:
-        # For floaters (WZ/NZ): at each reset the bond reprices to par, so the
+        # Floaters (WZ/NZ): at each reset the bond reprices to par, so the
         # full rate sensitivity is concentrated in the time to next coupon
         # reset. Mac Duration = time to next reset = ATR. Mod Duration would
         # be Mac / (1 + r/freq) but for sub-6M intervals at current rates
@@ -148,13 +238,20 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
         # WIBOR/POLSTR fixings in the DB yet -> set Mod = Mac.
         mac, mod = atr_y, atr_y
     else:
-        # For inflation-linked (IZ): BondSpot doesn't quote nominal YTM
-        # because the yield concept splits into real yield + breakeven
-        # inflation. Standard practitioner approximation when real yield
-        # is unavailable: use coupon_rate as YTM (gives par-equivalent
-        # Mac/Mod which matches typical IZ trading near par). When we
-        # later add CPI + real-yield data, this can be tightened.
-        effective_ytm = ytm if ytm is not None else coupon_rate
+        # Fixed-coupon / IZ / OK: prefer BondSpot's quoted YTM. If missing
+        # (typically IZ - BondSpot doesn't quote nominal yield for linkers
+        # because the concept splits into real yield + breakeven inflation),
+        # solve YTM from the quoted clean price + cash flow schedule.
+        # For IZ specifically, the quoted price is on real terms and CFs are
+        # real coupons, so the back-solved YTM is the real yield.
+        effective_ytm = ytm
+        if effective_ytm is None and coupon_rate is not None and freq and price is not None:
+            effective_ytm = solve_ytm(
+                price, f_date, i_date, m_date, coupon_rate, freq
+            )
+        # Last-resort fallback: par approximation (coupon_rate as YTM).
+        if effective_ytm is None and coupon_rate is not None:
+            effective_ytm = coupon_rate
         mac, mod = macaulay_modified_duration(
             f_date, m_date, i_date, coupon_rate, freq, effective_ytm
         )

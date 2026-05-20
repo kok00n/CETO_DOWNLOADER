@@ -6,14 +6,16 @@
 --   bondspot_analytics   - wyliczone metryki per (data, ISIN) - jeden wpis per dzien
 --                          (uzywamy fixing 2 = EOD jako zrodla YTM)
 --
--- MIGRACJA: jesli wczesniej miales bondspot_analytics z fixing_session w PK,
--- ten plik DROPnie ja i odtworzy w nowej strukturze - poprzednie wpisy znikna,
--- ale compute_analytics.py je uzupelni przy nastepnym uruchomieniu.
--- Funkcja bondspot_missing_analytics tez zmienila sygnature (brak fixing_session
--- w zwracanych kolumnach) - Postgres nie pozwala zmienic return type przez
--- CREATE OR REPLACE, trzeba najpierw DROP.
+-- Schema jest idempotentny: tabele uzywaja CREATE IF NOT EXISTS, funkcje
+-- wymagaja DROP+CREATE bo Postgres nie pozwala zmienic return type przez
+-- CREATE OR REPLACE.
+--
+-- Jednorazowa migracja z bondspot_analytics z fixing_session w PK (jesli
+-- masz takie z poprzedniej wersji):
+--    DROP TABLE bondspot_analytics CASCADE;
+-- Po DROP tabela bedzie odtworzona przy ponownym apply schematu, a
+-- compute_analytics.py uzupelni dane przy nastepnym uruchomieniu.
 
-DROP TABLE IF EXISTS bondspot_analytics CASCADE;
 DROP FUNCTION IF EXISTS bondspot_missing_analytics(INT);
 
 -- =====================================================================
@@ -67,6 +69,8 @@ CREATE INDEX IF NOT EXISTS idx_bondspot_analytics_isin_date
 --  RPC: brakujace metryki - dni z fixingiem 2 (EOD) bez wpisu w analytics.
 --  Uzywane przez compute_analytics.py do incremental compute.
 --  Bierzemy wylacznie fixing_session=2 zeby nie liczyc 2x tego samego dnia.
+--  Zwraca tez fixing_price - potrzebne do back-solve YTM dla IZ (BondSpot
+--  nie quotuje nominal yield dla linkerow).
 -- =====================================================================
 CREATE OR REPLACE FUNCTION bondspot_missing_analytics(
     p_limit  INT DEFAULT 100000
@@ -74,10 +78,11 @@ CREATE OR REPLACE FUNCTION bondspot_missing_analytics(
 RETURNS TABLE (
     fixing_date     DATE,
     isin            VARCHAR,
-    fixing_yield    NUMERIC
+    fixing_yield    NUMERIC,
+    fixing_price    NUMERIC
 )
 LANGUAGE sql STABLE AS $$
-    SELECT f.fixing_date, f.isin, f.fixing_yield
+    SELECT f.fixing_date, f.isin, f.fixing_yield, f.fixing_price
     FROM bondspot_fixing f
     LEFT JOIN bondspot_analytics a
       ON a.fixing_date = f.fixing_date
