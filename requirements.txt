@@ -1,3 +1,7 @@
 requests==2.32.3
 openpyxl==3.1.5
 python-dateutil==2.9.0
+# xlrd 1.x is the last version that reads legacy .xls (CFB) files.
+# Required for MF Bony_Skarbowe.xls (T-bills); MF Obligacje_Hurtowe.xlsm
+# uses xlsx and is handled by openpyxl.
+xlrd==1.2.0
