@@ -1,0 +1,7 @@
+# Local-only dependencies for notebooks/bondspot_dashboard.ipynb
+# Install with: pip install -r requirements-notebook.txt
+jupyterlab>=4.0
+pandas>=2.0
+plotly>=5.20
+python-dotenv>=1.0
+requests>=2.32
