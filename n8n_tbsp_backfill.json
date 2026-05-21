@@ -1,5 +1,5 @@
 {
-  "name": "TBSP Trading PLN - Backfill / Gap Filler",
+  "name": "TBSP Trading PLN - Daily + Backfill",
   "active": false,
   "settings": {
     "executionOrder": "v1",
@@ -12,7 +12,7 @@
   "nodes": [
     {
       "id": "trigger",
-      "name": "Schedule Daily 03:30",
+      "name": "Schedule Daily 18:30",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -24,7 +24,7 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 30 3 * * *"
+              "expression": "0 30 18 * * *"
             }
           ]
         }
@@ -367,7 +367,7 @@
     }
   ],
   "connections": {
-    "Schedule Daily 03:30": {
+    "Schedule Daily 18:30": {
       "main": [
         [
           {

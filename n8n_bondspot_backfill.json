@@ -1,5 +1,5 @@
 {
-  "name": "BondSpot Fixing - Backfill / Gap Filler",
+  "name": "BondSpot Fixing - Daily + Backfill",
   "active": false,
   "settings": {
     "executionOrder": "v1",
@@ -12,7 +12,7 @@
   "nodes": [
     {
       "id": "trigger",
-      "name": "Schedule Daily 03:00",
+      "name": "Schedule Daily 18:30",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [200, 300],
@@ -21,7 +21,7 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 0 3 * * *"
+              "expression": "0 30 18 * * *"
             }
           ]
         }
@@ -328,7 +328,7 @@
     }
   ],
   "connections": {
-    "Schedule Daily 03:00": {
+    "Schedule Daily 18:30": {
       "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
     },
     "Config": {
