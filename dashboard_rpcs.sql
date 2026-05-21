@@ -11,6 +11,7 @@ DROP FUNCTION IF EXISTS portfolio_metrics_by_type(DATE, DATE);
 DROP FUNCTION IF EXISTS debt_composition_by_type(DATE, DATE);
 DROP VIEW IF EXISTS v_portfolio_metrics_by_type;
 DROP VIEW IF EXISTS v_debt_composition_by_type;
+DROP VIEW IF EXISTS v_debt_composition_bonds;
 
 -- =====================================================================
 --  VIEW: portfolio-weighted metryki per (data, typ obligacji)
@@ -40,35 +41,20 @@ WHERE outstanding_mln_pln IS NOT NULL
 GROUP BY fixing_date, bond_type;
 
 -- =====================================================================
---  VIEW: sklad dlugu (outstanding per typ + tbill) - dla stacked area
---  Bondy z v_bondspot_full_weighted; bony jako oddzielny 'tbill' kubel
---  liczony per dzien dla ktorego istnieje fixing 2 (zeby siatka dat
---  byla wspolna - inaczej stacked area mialoby dziury w weekendy).
+--  VIEW: sklad dlugu - bondy per (data, typ).
+--  T-bille fetchowane osobno jako raw tbill_outstanding (zmiany salda)
+--  i resamplowane w notebooku w pandasie. Wczesniej probowano UNION ALL
+--  z LATERAL na tbills_outstanding_at(...) wewnatrz tego widoku - PostgREST
+--  zwracal 500 (LATERAL + set-returning function w widoku, opakowany w
+--  outer ORDER BY, nie planuje sie dobrze).
 -- =====================================================================
-CREATE OR REPLACE VIEW v_debt_composition_by_type AS
-    -- Bondy: per (date, type)
-    SELECT
-        fixing_date,
-        bond_type,
-        SUM(outstanding_mln_pln) AS outstanding_mln_pln
-    FROM v_bondspot_full_weighted
-    WHERE outstanding_mln_pln IS NOT NULL
-      AND outstanding_mln_pln > 0
-      AND bond_type IS NOT NULL
-    GROUP BY fixing_date, bond_type
-
-    UNION ALL
-
-    -- Bony skarbowe: per dzien fixingu (kubelek 'tbill')
-    SELECT
-        f.fixing_date,
-        'tbill'::TEXT AS bond_type,
-        COALESCE(SUM(t.balance_mln_pln), 0) AS outstanding_mln_pln
-    FROM (
-        SELECT DISTINCT fixing_date
-        FROM bondspot_fixing
-        WHERE fixing_session = 2
-    ) f
-    LEFT JOIN LATERAL tbills_outstanding_at(f.fixing_date) t ON true
-    GROUP BY f.fixing_date
-    HAVING COALESCE(SUM(t.balance_mln_pln), 0) > 0;
+CREATE OR REPLACE VIEW v_debt_composition_bonds AS
+SELECT
+    fixing_date,
+    bond_type,
+    SUM(outstanding_mln_pln) AS outstanding_mln_pln
+FROM v_bondspot_full_weighted
+WHERE outstanding_mln_pln IS NOT NULL
+  AND outstanding_mln_pln > 0
+  AND bond_type IS NOT NULL
+GROUP BY fixing_date, bond_type;
