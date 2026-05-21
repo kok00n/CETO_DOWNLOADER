@@ -101,9 +101,15 @@ SELECT
 FROM bond_auctions a;
 
 -- =====================================================================
---  VIEW: aukcje + market context (concession vs ostatni fixing przed aukcja)
---  concession_bp > 0 oznacza ze aukcja byla droga (avg yield > pre-mkt yield)
---  concession_bp < 0 oznacza "through" - aukcja tansza niz rynek wtorny
+--  VIEW: aukcje + market context (concession vs najswiezszy pre-auction fixing)
+--  concession_bp > 0  - aukcja "tail" vs rynek (MF musial podniesc rentownosc)
+--  concession_bp < 0  - aukcja "through" (uplasowala sie nizej niz rynek wtorny)
+--
+--  Wybor pre-auction fixingu (priorytet):
+--    1) ten sam dzien, sesja 1 (~11:00 - przed wynikiem aukcji ~11:30)
+--    2) poprzednie dni, sesja 2 (EOD)
+--    3) poprzednie dni, sesja 1
+--  Nigdy nie bierzemy sesji 2 z dnia aukcji (jest PO aukcji - data leakage).
 -- =====================================================================
 CREATE OR REPLACE VIEW v_auction_with_market_context AS
 SELECT
@@ -117,10 +123,12 @@ LEFT JOIN LATERAL (
     SELECT fixing_yield, fixing_date
     FROM bondspot_fixing
     WHERE isin = m.isin
-      AND fixing_date < m.auction_date
-      AND fixing_session = 2
       AND fixing_yield IS NOT NULL
-    ORDER BY fixing_date DESC
+      AND (
+          (fixing_date = m.auction_date AND fixing_session = 1)
+          OR fixing_date < m.auction_date
+      )
+    ORDER BY fixing_date DESC, fixing_session DESC
     LIMIT 1
 ) f ON true;
 
