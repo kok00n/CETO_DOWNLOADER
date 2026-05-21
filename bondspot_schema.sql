@@ -66,9 +66,13 @@ CREATE INDEX IF NOT EXISTS idx_bondspot_scrape_log_status
 
 -- =====================================================================
 --  FUNKCJA: lista (data, sesja) ktore wymagaja jeszcze scrapowania.
---  Zwraca daty robocze (pon-pt) od p_from do CURRENT_DATE,
---  ktorych brakuje w bondspot_scrape_log albo dla ktorych ostatnia
---  proba zakonczyla sie statusem 'error'. Posortowane od najstarszych.
+--  Zwraca daty robocze (pon-pt) od p_from do CURRENT_DATE, ktore:
+--    - nie maja jeszcze wpisu w bondspot_scrape_log, lub
+--    - maja status 'error', lub
+--    - maja status 'empty' ALE p.fixing_date = CURRENT_DATE (zeby ponawiac
+--      dzisiejsze - jak workflow odpalil sie rano przed publikacja fixingu 2,
+--      to drugi fixing zostal zalogowany jako empty; chcemy retry wieczorem).
+--    Stare 'empty' (poza dzis) to weekendy/swieta - juz nie probujemy.
 -- =====================================================================
 CREATE OR REPLACE FUNCTION bondspot_missing_fixings(
     p_from   DATE DEFAULT DATE '2011-01-01',
@@ -93,7 +97,9 @@ LANGUAGE sql STABLE AS $$
     LEFT JOIN bondspot_scrape_log l
       ON l.fixing_date = p.fixing_date
      AND l.fixing_session = p.fixing_session
-    WHERE l.status IS NULL OR l.status = 'error'
+    WHERE l.status IS NULL
+       OR l.status = 'error'
+       OR (l.status = 'empty' AND p.fixing_date = CURRENT_DATE)
     ORDER BY p.fixing_date ASC, p.fixing_session ASC
     LIMIT p_limit;
 $$;

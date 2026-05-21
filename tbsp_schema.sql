@@ -64,6 +64,9 @@ CREATE INDEX IF NOT EXISTS idx_tbsp_scrape_log_status
 -- =====================================================================
 --  FUNKCJA: brakujace dni (pon-pt) od p_from do CURRENT_DATE.
 --  Dni z status='error' (lub brakiem wpisu) sa retryowane.
+--  Dni z status='empty' AND trade_date=CURRENT_DATE tez sa retryowane
+--  (gdyby workflow odpalil sie zanim TBSP opublikowal notowania).
+--  Stare 'empty' (weekendy/swieta) zostaja pominiete.
 -- =====================================================================
 CREATE OR REPLACE FUNCTION tbsp_missing_dates(
     p_from   DATE DEFAULT DATE '2011-01-01',
@@ -79,7 +82,9 @@ LANGUAGE sql STABLE AS $$
     SELECT c.trade_date
     FROM calendar c
     LEFT JOIN tbsp_scrape_log l ON l.trade_date = c.trade_date
-    WHERE l.status IS NULL OR l.status = 'error'
+    WHERE l.status IS NULL
+       OR l.status = 'error'
+       OR (l.status = 'empty' AND c.trade_date = CURRENT_DATE)
     ORDER BY c.trade_date ASC
     LIMIT p_limit;
 $$;
