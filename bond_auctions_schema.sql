@@ -14,6 +14,13 @@
 DROP VIEW IF EXISTS v_recent_auctions;
 DROP VIEW IF EXISTS v_auction_with_market_context;
 DROP VIEW IF EXISTS v_auction_metrics;
+DROP VIEW IF EXISTS v_auction_day_totals;
+DROP VIEW IF EXISTS v_auction_by_tenor;
+DROP VIEW IF EXISTS v_auction_by_coupon_bucket;
+
+-- Dodanie kolumny years_to_maturity (LataDoWykupu z MF) - idempotentne
+ALTER TABLE IF EXISTS bond_auctions
+    ADD COLUMN IF NOT EXISTS years_to_maturity SMALLINT;
 
 -- =====================================================================
 --  BOND AUCTIONS - raw + cleaned auction data per ISIN per event
@@ -27,6 +34,7 @@ CREATE TABLE IF NOT EXISTS bond_auctions (
     seria             VARCHAR(32) NOT NULL,
     isin              VARCHAR(12) NOT NULL,
     maturity_date     DATE,
+    years_to_maturity SMALLINT,                -- LataDoWykupu z MF (orig. tenor, np. 5/10/30)
     coupon_kind       CHAR(1),                 -- 'S','Z','I','O'
     offer_min_mln     NUMERIC(14,3),           -- Podaz Min
     offer_max_mln     NUMERIC(14,3),           -- Podaz Max (= zwykle target ilosc)
@@ -118,3 +126,114 @@ FROM v_auction_with_market_context
 WHERE type_tx = 'S'
   AND type_op IN ('AS', 'AU', 'AZ')
 ORDER BY auction_date DESC, isin;
+
+-- =====================================================================
+--  VIEW: statystyki CALEJ aukcji per dzien + type_op (zlozone aukcje
+--  maja wiele serii - tu sumujemy je do jednego wiersza).
+--  Metryki:
+--    n_series         - ile serii sprzedanych w tym dniu/type_op
+--    bid_to_cover     - sum(demand) / sum(sold)
+--    bid_to_offer     - sum(demand) / sum(offer_max)
+--    w_yield_avg      - srednia wazona sold-em
+--    w_tail_bp        - sredni tail wazony sold-em
+--    w_concession_bp  - srednia wazona concession (gdy dostepny prior fixing)
+-- =====================================================================
+CREATE OR REPLACE VIEW v_auction_day_totals AS
+SELECT
+    auction_date,
+    type_op,
+    COUNT(*) AS n_series,
+    SUM(offer_max_mln)              AS total_offer_mln,
+    SUM(demand_total_mln)           AS total_demand_mln,
+    SUM(demand_nc_mln)              AS total_demand_nc_mln,
+    SUM(ABS(sold_total_mln))        AS total_sold_mln,
+    SUM(sold_nc_mln)                AS total_sold_nc_mln,
+    SUM(demand_total_mln) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS bid_to_cover,
+    SUM(demand_total_mln) / NULLIF(SUM(offer_max_mln), 0)
+        AS bid_to_offer,
+    SUM(yield_avg * ABS(sold_total_mln)) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS w_yield_avg,
+    SUM(tail_yield_bp * ABS(sold_total_mln)) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS w_tail_bp,
+    SUM(concession_bp * ABS(sold_total_mln)) FILTER (WHERE concession_bp IS NOT NULL)
+        / NULLIF(SUM(ABS(sold_total_mln)) FILTER (WHERE concession_bp IS NOT NULL), 0)
+        AS w_concession_bp,
+    SUM(demand_nc_mln) / NULLIF(SUM(demand_total_mln), 0)
+        AS nc_share_demand,
+    SUM(sold_nc_mln) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS nc_share_sold
+FROM v_auction_with_market_context
+WHERE type_tx = 'S'
+GROUP BY auction_date, type_op;
+
+-- =====================================================================
+--  VIEW: aukcje pogrupowane per (data, type_op, years_to_maturity).
+--  Pozwala porownywac B/C i tail w czasie dla tej samej kategorii tenoru
+--  (np. tylko 10Y, tylko 30Y).
+-- =====================================================================
+CREATE OR REPLACE VIEW v_auction_by_tenor AS
+SELECT
+    auction_date,
+    type_op,
+    years_to_maturity,
+    COUNT(*) AS n_series,
+    SUM(offer_max_mln)              AS total_offer_mln,
+    SUM(demand_total_mln)           AS total_demand_mln,
+    SUM(ABS(sold_total_mln))        AS total_sold_mln,
+    SUM(demand_total_mln) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS bid_to_cover,
+    SUM(yield_avg * ABS(sold_total_mln)) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS w_yield_avg,
+    SUM(tail_yield_bp * ABS(sold_total_mln)) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS w_tail_bp,
+    SUM(concession_bp * ABS(sold_total_mln)) FILTER (WHERE concession_bp IS NOT NULL)
+        / NULLIF(SUM(ABS(sold_total_mln)) FILTER (WHERE concession_bp IS NOT NULL), 0)
+        AS w_concession_bp
+FROM v_auction_with_market_context
+WHERE type_tx = 'S'
+  AND years_to_maturity IS NOT NULL
+GROUP BY auction_date, type_op, years_to_maturity;
+
+-- =====================================================================
+--  VIEW: aukcje pogrupowane per (data, type_op, coupon_bucket).
+--  Kubelki kuponowe:
+--    'I'  - inflation-linked (Oprocentowanie='I', np. IZ)
+--    'OS' - zero-coupon + stale (O+S laczone, np. OK/PS/DS/WS)
+--    'Z'  - zmienne (WZ/NZ)
+-- =====================================================================
+CREATE OR REPLACE VIEW v_auction_by_coupon_bucket AS
+SELECT
+    auction_date,
+    type_op,
+    CASE coupon_kind
+        WHEN 'I' THEN 'I'
+        WHEN 'Z' THEN 'Z'
+        WHEN 'O' THEN 'OS'
+        WHEN 'S' THEN 'OS'
+        ELSE coupon_kind
+    END AS coupon_bucket,
+    COUNT(*) AS n_series,
+    SUM(offer_max_mln)              AS total_offer_mln,
+    SUM(demand_total_mln)           AS total_demand_mln,
+    SUM(ABS(sold_total_mln))        AS total_sold_mln,
+    SUM(demand_total_mln) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS bid_to_cover,
+    SUM(yield_avg * ABS(sold_total_mln)) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS w_yield_avg,
+    SUM(tail_yield_bp * ABS(sold_total_mln)) / NULLIF(SUM(ABS(sold_total_mln)), 0)
+        AS w_tail_bp,
+    SUM(concession_bp * ABS(sold_total_mln)) FILTER (WHERE concession_bp IS NOT NULL)
+        / NULLIF(SUM(ABS(sold_total_mln)) FILTER (WHERE concession_bp IS NOT NULL), 0)
+        AS w_concession_bp
+FROM v_auction_with_market_context
+WHERE type_tx = 'S'
+  AND coupon_kind IS NOT NULL
+GROUP BY auction_date, type_op,
+    CASE coupon_kind
+        WHEN 'I' THEN 'I'
+        WHEN 'Z' THEN 'Z'
+        WHEN 'O' THEN 'OS'
+        WHEN 'S' THEN 'OS'
+        ELSE coupon_kind
+    END;

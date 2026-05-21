@@ -106,6 +106,8 @@ def parse_auctions(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
             "isin": isin,
             "maturity_date": _to_date(d.get("DataWykupu")).isoformat()
                 if _to_date(d.get("DataWykupu")) else None,
+            "years_to_maturity": int(_to_float(d.get("LataDoWykupu")))
+                if _to_float(d.get("LataDoWykupu")) is not None else None,
             "coupon_kind": (d.get("Oprocentowanie") or None),
             "offer_min_mln": _to_float(d.get("Podaż Min")
                                        or d.get("PodażMin")),
