@@ -11,12 +11,21 @@
 --
 -- Schema idempotentny: tabela CREATE IF NOT EXISTS, widoki CREATE OR REPLACE.
 
+-- Kolejnosc DROP musi byc liscie -> korzen (PostgreSQL nie pozwala
+-- zdropowac widoku, jesli inny widok zalezy od niego). Drzewo:
+--    bond_auctions
+--      └─ v_auction_metrics
+--          └─ v_auction_with_market_context
+--              ├─ v_recent_auctions
+--              ├─ v_auction_day_totals
+--              ├─ v_auction_by_tenor
+--              └─ v_auction_by_coupon_bucket
 DROP VIEW IF EXISTS v_recent_auctions;
-DROP VIEW IF EXISTS v_auction_with_market_context;
-DROP VIEW IF EXISTS v_auction_metrics;
 DROP VIEW IF EXISTS v_auction_day_totals;
 DROP VIEW IF EXISTS v_auction_by_tenor;
 DROP VIEW IF EXISTS v_auction_by_coupon_bucket;
+DROP VIEW IF EXISTS v_auction_with_market_context;
+DROP VIEW IF EXISTS v_auction_metrics;
 
 -- Dodanie kolumny years_to_maturity (LataDoWykupu z MF) - idempotentne
 ALTER TABLE IF EXISTS bond_auctions
