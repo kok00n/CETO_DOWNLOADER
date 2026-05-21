@@ -12,6 +12,8 @@ DROP FUNCTION IF EXISTS debt_composition_by_type(DATE, DATE);
 DROP VIEW IF EXISTS v_portfolio_metrics_by_type;
 DROP VIEW IF EXISTS v_debt_composition_by_type;
 DROP VIEW IF EXISTS v_debt_composition_bonds;
+DROP VIEW IF EXISTS v_bond_outstanding_by_type_events;
+DROP VIEW IF EXISTS v_tbill_outstanding_events;
 
 -- =====================================================================
 --  VIEW: portfolio-weighted metryki per (data, typ obligacji)
@@ -42,11 +44,13 @@ GROUP BY fixing_date, bond_type;
 
 -- =====================================================================
 --  VIEW: sklad dlugu - bondy per (data, typ).
---  T-bille fetchowane osobno jako raw tbill_outstanding (zmiany salda)
---  i resamplowane w notebooku w pandasie. Wczesniej probowano UNION ALL
---  z LATERAL na tbills_outstanding_at(...) wewnatrz tego widoku - PostgREST
---  zwracal 500 (LATERAL + set-returning function w widoku, opakowany w
---  outer ORDER BY, nie planuje sie dobrze).
+--  Stara wersja oparta na v_bondspot_full_weighted (=GROUP BY z BondSpot
+--  fixing dates) ma dwa problemy:
+--    (1) NZ-tki pokazuja sie dopiero od kiedy BondSpot je kwotuje, a nie
+--        od dnia pierwszej emisji (np. NZ0928: MF 2025-11-21, BondSpot
+--        zaczyna ~kwiecien 2026 -> chart pokazuje NZ dopiero od kwietnia)
+--    (2) Daty grupowania to fixing_dates BondSpota (codzienne), nie data
+--        rzeczywistych zmian (aukcje, odkupy) - chart "wyglada na monthly"
 -- =====================================================================
 CREATE OR REPLACE VIEW v_debt_composition_bonds AS
 SELECT
@@ -58,3 +62,62 @@ WHERE outstanding_mln_pln IS NOT NULL
   AND outstanding_mln_pln > 0
   AND bond_type IS NOT NULL
 GROUP BY fixing_date, bond_type;
+
+-- =====================================================================
+--  VIEW: sklad dlugu na bazie EVENT-DRIVEN delty (z MF bezposrednio,
+--  niezalezne od BondSpota).
+--
+--  Algorytm: dla kazdego (change_date, bond_type) sumujemy delty wszystkich
+--  ISIN-ow tego typu w tym dniu, potem cumulative sum WINDOW per typ daje
+--  total outstanding per typ na ten dzien.
+--
+--  Wynik to sparse szereg event-driven (jedno row per (change_date, type)
+--  gdzie wystapilo cokolwiek dla danego typu). Pandas potem forward-filluje
+--  miedzy eventami.
+--
+--  Dla NZ0928 (MF issue 2025-11-21): rekord (2025-11-21, NZ, ~28000) -
+--  chart pokazuje NZ od tego dnia, nie od BondSpota.
+-- =====================================================================
+CREATE OR REPLACE VIEW v_bond_outstanding_by_type_events AS
+WITH per_date_type AS (
+    SELECT
+        bo.change_date,
+        bs.bond_type,
+        SUM(bo.delta_mln_pln) AS delta_per_date_type
+    FROM bond_outstanding bo
+    JOIN bond_specs bs ON bs.isin = bo.isin
+    WHERE bs.bond_type IS NOT NULL
+    GROUP BY bo.change_date, bs.bond_type
+)
+SELECT
+    change_date,
+    bond_type,
+    SUM(delta_per_date_type) OVER (
+        PARTITION BY bond_type
+        ORDER BY change_date
+        ROWS UNBOUNDED PRECEDING
+    ) AS outstanding_mln_pln
+FROM per_date_type
+ORDER BY change_date, bond_type;
+
+-- =====================================================================
+--  VIEW: total tbill outstanding na bazie event-driven delty.
+--  Analogiczne do v_bond_outstanding_by_type_events ale bez podzialu
+--  na typy (bony skarbowe traktujemy jako jeden kubel).
+-- =====================================================================
+CREATE OR REPLACE VIEW v_tbill_outstanding_events AS
+WITH per_date AS (
+    SELECT
+        change_date,
+        SUM(delta_mln_pln) AS delta_per_date
+    FROM tbill_outstanding
+    GROUP BY change_date
+)
+SELECT
+    change_date,
+    SUM(delta_per_date) OVER (
+        ORDER BY change_date
+        ROWS UNBOUNDED PRECEDING
+    ) AS outstanding_mln_pln
+FROM per_date
+ORDER BY change_date;
