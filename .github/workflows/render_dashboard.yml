@@ -1,0 +1,57 @@
+name: Render dashboard to GitHub Pages
+
+on:
+  # Auto-run after Compute BondSpot analytics finishes (successfully)
+  workflow_run:
+    workflows: ["Compute BondSpot analytics"]
+    types: [completed]
+  # Or manually from the Actions tab
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Avoid clashes when two runs queue up (e.g. cron + manual)
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  render:
+    # Skip if the triggering workflow failed
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install notebook dependencies
+        run: pip install -r requirements-notebook.txt
+
+      - name: Execute notebook -> HTML
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          mkdir -p public
+          jupyter nbconvert --execute --to html \
+            --ExecutePreprocessor.timeout=600 \
+            --output-dir=public --output=index.html \
+            notebooks/bondspot_dashboard.ipynb
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
