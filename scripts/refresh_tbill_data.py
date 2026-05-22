@@ -226,6 +226,7 @@ def parse_tbill_data(
                     out_rows.append({
                         "isin": isin,
                         "change_date": recon_date.isoformat(),
+                        "auction_date": None,  # recon nie pochodzi z aukcji
                         "delta_mln_pln": round(diff, 3),
                         "balance_mln_pln": round(target, 3),
                         "op_type": "reconciliation",
@@ -250,6 +251,7 @@ def parse_tbill_data(
                 out_rows.append({
                     "isin": isin,
                     "change_date": redemption_date.isoformat(),
+                    "auction_date": None,  # redemption nie pochodzi z aukcji
                     "delta_mln_pln": -round(balance, 3),
                     "balance_mln_pln": 0.0,
                     "op_type": "redemption",
