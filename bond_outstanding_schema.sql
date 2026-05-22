@@ -44,6 +44,12 @@ CREATE INDEX IF NOT EXISTS idx_bond_outstanding_isin_date
     ON bond_outstanding (isin, change_date DESC);
 CREATE INDEX IF NOT EXISTS idx_bond_outstanding_date
     ON bond_outstanding (change_date);
+-- Functional index dla LATERAL w v_bondspot_full_weighted ktore filtruje po
+-- COALESCE(auction_date, change_date). Bez tego per-row LATERAL leci full
+-- scan -> v_portfolio_metrics_daily timeoutuje (500 z PostgREST). Z tym
+-- indexem seek per (isin, effective_date) jest O(log n).
+CREATE INDEX IF NOT EXISTS idx_bond_outstanding_isin_effective_date
+    ON bond_outstanding (isin, COALESCE(auction_date, change_date) DESC);
 
 DROP TRIGGER IF EXISTS trg_bond_outstanding_updated_at ON bond_outstanding;
 CREATE TRIGGER trg_bond_outstanding_updated_at
