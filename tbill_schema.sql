@@ -42,7 +42,8 @@ CREATE TRIGGER trg_tbill_specs_updated_at
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS tbill_outstanding (
     isin              VARCHAR(12) NOT NULL,
-    change_date       DATE        NOT NULL,
+    change_date       DATE        NOT NULL,   -- DataRozliczenia (settlement)
+    auction_date      DATE,                   -- MIN DataTransakcji per (isin,settle); NULL dla starych/recon/redemption
     delta_mln_pln     NUMERIC(14,3),
     balance_mln_pln   NUMERIC(14,3) NOT NULL,
     op_type           TEXT,                -- 'sale','buyback','redemption','reconciliation'
@@ -52,6 +53,9 @@ CREATE TABLE IF NOT EXISTS tbill_outstanding (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (isin, change_date)
 );
+
+-- Migracja dla istniejacych instalacji (idempotentne)
+ALTER TABLE tbill_outstanding ADD COLUMN IF NOT EXISTS auction_date DATE;
 
 CREATE INDEX IF NOT EXISTS idx_tbill_outstanding_isin_date
     ON tbill_outstanding (isin, change_date DESC);

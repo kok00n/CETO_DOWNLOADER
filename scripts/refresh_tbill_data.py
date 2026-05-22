@@ -108,7 +108,8 @@ def parse_tbill_data(
     ws = wb.sheet_by_name(sheet_name)
 
     # Column indices (positional - headers bilingual with newlines; layout stable)
-    COL_SETTLE = 2
+    COL_AUCTION = 1  # DataTransakcji (auction/transaction date)
+    COL_SETTLE = 2   # DataRozliczenia (settlement date)
     COL_TYPE_TX = 3
     COL_TYPE_OP = 4
     COL_RODZAJ = 5
@@ -116,9 +117,13 @@ def parse_tbill_data(
     COL_ISIN = 7
     COL_AMOUNT = 12  # Sprzedaż/Odkup Łącznie
 
-    # Aggregate per (isin, settle_date); track earliest settle + maturity per ISIN
+    # Aggregate per (isin, settle_date); track earliest settle + maturity per ISIN.
+    # Also track MIN auction_date per (isin, settle_date) - dla dashboard chartow:
+    # jak aukcja sie odbyla ale settlement jeszcze nie (T+1/T+2), chcemy pokazac
+    # outstanding na auction_date a nie czekac do settlement.
     deltas: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
     op_kinds: dict[str, dict[date, set[str]]] = defaultdict(lambda: defaultdict(set))
+    auction_dates: dict[str, dict[date, date]] = defaultdict(dict)  # (isin,settle) -> min auction
     earliest_settle: dict[str, date] = {}
     maturity_by_isin: dict[str, date] = {}
     rodzaj_by_isin: dict[str, str] = {}
@@ -139,6 +144,12 @@ def parse_tbill_data(
         # Sign convention: MF encodes buyback as negative amount (like bondy)
         deltas[isin][settle] += amount
         op_kinds[isin][settle].add("sale" if type_tx == "S" else "buyback")
+
+        auction = _excel_to_date(ws.cell_value(i, COL_AUCTION))
+        if auction is not None:
+            prior = auction_dates[isin].get(settle)
+            if prior is None or auction < prior:
+                auction_dates[isin][settle] = auction
 
         mat = _excel_to_date(ws.cell_value(i, COL_MATURITY))
         if mat:
@@ -184,9 +195,11 @@ def parse_tbill_data(
             balance += delta
             kinds = op_kinds[isin][cd]
             op_type = next(iter(kinds)) if len(kinds) == 1 else "mixed"
+            ad = auction_dates[isin].get(cd)
             out_rows.append({
                 "isin": isin,
                 "change_date": cd.isoformat(),
+                "auction_date": ad.isoformat() if ad else None,
                 "delta_mln_pln": round(delta, 3),
                 "balance_mln_pln": round(max(balance, 0.0), 3),
                 "op_type": op_type,
