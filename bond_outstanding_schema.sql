@@ -25,7 +25,8 @@ DROP FUNCTION IF EXISTS bond_outstanding_at(VARCHAR, DATE);
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS bond_outstanding (
     isin              VARCHAR(12) NOT NULL,
-    change_date       DATE        NOT NULL,
+    change_date       DATE        NOT NULL,   -- DataRozliczenia (settlement)
+    auction_date      DATE,                   -- MIN DataTransakcji per (isin,settle); NULL dla recon/redemption
     delta_mln_pln     NUMERIC(14,3),       -- net zmiana na ten dzien (+S, -O)
     balance_mln_pln   NUMERIC(14,3) NOT NULL,  -- saldo po tej zmianie
     op_type           TEXT,                -- 'sale','buyback','mixed','redemption'
@@ -35,6 +36,9 @@ CREATE TABLE IF NOT EXISTS bond_outstanding (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (isin, change_date)
 );
+
+-- Migracja dla istniejacych instalacji (idempotentne)
+ALTER TABLE bond_outstanding ADD COLUMN IF NOT EXISTS auction_date DATE;
 
 CREATE INDEX IF NOT EXISTS idx_bond_outstanding_isin_date
     ON bond_outstanding (isin, change_date DESC);

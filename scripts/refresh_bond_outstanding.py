@@ -103,9 +103,14 @@ def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
     ws = wb["Operacje"]
     headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
 
-    # Step 1: aggregate deltas by (isin, settlement_date)
+    # Step 1: aggregate deltas by (isin, settlement_date).
+    # Track tez MIN(auction_date) per (isin, settle_date) - chart 3 dashboard
+    # uzywa go zamiast settle_date zeby aukcje pojawialy sie na osi czasu w
+    # dniu transakcji a nie 2 dni pozniej. PK pozostaje (isin, change_date)
+    # = (isin, settle_date) zeby reconciliation match-owal MF Zadluzenie.
     deltas: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
     op_kinds: dict[str, dict[date, set[str]]] = defaultdict(lambda: defaultdict(set))
+    auction_dates: dict[str, dict[date, date]] = defaultdict(dict)
     maturity_by_isin: dict[str, date] = {}
 
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -128,6 +133,12 @@ def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
             continue
         deltas[isin][settle] += amount
         op_kinds[isin][settle].add("sale" if type_tx == "S" else "buyback")
+
+        auction = _to_date(d.get("DataTransakcji"))
+        if auction is not None:
+            prior = auction_dates[isin].get(settle)
+            if prior is None or auction < prior:
+                auction_dates[isin][settle] = auction
 
         mat = _to_date(d.get("DataWykupu"))
         if mat:
@@ -152,9 +163,11 @@ def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
             balance += delta
             kinds = op_kinds[isin][cd]
             op_type = next(iter(kinds)) if len(kinds) == 1 else "mixed"
+            ad = auction_dates[isin].get(cd)
             rows.append({
                 "isin": isin,
                 "change_date": cd.isoformat(),
+                "auction_date": ad.isoformat() if ad else None,
                 "delta_mln_pln": round(delta, 3),
                 "balance_mln_pln": round(max(balance, 0.0), 3),
                 "op_type": op_type,
@@ -185,6 +198,7 @@ def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
                     rows.append({
                         "isin": isin,
                         "change_date": recon_date.isoformat(),
+                        "auction_date": None,  # recon nie z aukcji
                         "delta_mln_pln": round(diff, 3),
                         "balance_mln_pln": round(target, 3),
                         "op_type": "reconciliation",
@@ -212,6 +226,7 @@ def parse_outstanding(xlsm_bytes: BytesIO, source_url: str) -> list[dict]:
                 rows.append({
                     "isin": isin,
                     "change_date": redemption_date.isoformat(),
+                    "auction_date": None,  # redemption nie z aukcji
                     "delta_mln_pln": -round(balance, 3),
                     "balance_mln_pln": 0.0,
                     "op_type": "redemption",
