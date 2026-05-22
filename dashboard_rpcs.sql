@@ -20,19 +20,27 @@ DROP VIEW IF EXISTS v_tbill_outstanding_events;
 --  Dla kazdego dnia x kazdy typ: laczne outstanding + weighted avg
 --  Mod/Mac Duration, ATM, ATR (wazone outstanding-em).
 -- =====================================================================
+-- Mianownik per-metric (CASE WHEN metric IS NOT NULL) - bondy ktore istnieja
+-- ale nie maja jeszcze policzonych analytics nie powinny biasowac wazonej
+-- sredniej w dol. Reszta - jak v_portfolio_metrics_daily, tylko grupa
+-- dodatkowo po bond_type.
 CREATE OR REPLACE VIEW v_portfolio_metrics_by_type AS
 SELECT
     fixing_date,
     bond_type,
     SUM(outstanding_mln_pln) AS total_mln_pln,
-    SUM(mod_duration * outstanding_mln_pln) / NULLIF(SUM(outstanding_mln_pln), 0)
-        AS w_mod_duration,
-    SUM(mac_duration * outstanding_mln_pln) / NULLIF(SUM(outstanding_mln_pln), 0)
-        AS w_mac_duration,
-    SUM(atm_years * outstanding_mln_pln) / NULLIF(SUM(outstanding_mln_pln), 0)
-        AS w_atm,
-    SUM(atr_years * outstanding_mln_pln) / NULLIF(SUM(outstanding_mln_pln), 0)
-        AS w_atr,
+    SUM(mod_duration * outstanding_mln_pln) / NULLIF(
+        SUM(CASE WHEN mod_duration IS NOT NULL THEN outstanding_mln_pln END), 0
+    ) AS w_mod_duration,
+    SUM(mac_duration * outstanding_mln_pln) / NULLIF(
+        SUM(CASE WHEN mac_duration IS NOT NULL THEN outstanding_mln_pln END), 0
+    ) AS w_mac_duration,
+    SUM(atm_years * outstanding_mln_pln) / NULLIF(
+        SUM(CASE WHEN atm_years IS NOT NULL THEN outstanding_mln_pln END), 0
+    ) AS w_atm,
+    SUM(atr_years * outstanding_mln_pln) / NULLIF(
+        SUM(CASE WHEN atr_years IS NOT NULL THEN outstanding_mln_pln END), 0
+    ) AS w_atr,
     SUM(fixing_yield * outstanding_mln_pln) / NULLIF(
         SUM(CASE WHEN fixing_yield IS NOT NULL THEN outstanding_mln_pln END), 0
     ) AS w_yield_pct
