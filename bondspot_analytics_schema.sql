@@ -51,16 +51,22 @@ CREATE TRIGGER trg_bond_specs_updated_at
 --  Jeden wpis na dzien - zrodlem YTM jest fixing_session = 2 (EOD).
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS bondspot_analytics (
-    fixing_date     DATE         NOT NULL,
-    isin            VARCHAR(12)  NOT NULL,
-    bond_type       TEXT,
-    atm_years       NUMERIC(8,4),    -- Average Time to Maturity (lata)
-    atr_years       NUMERIC(8,4),    -- Average Time to Refixing  (lata)
-    mac_duration    NUMERIC(8,4),    -- Macaulay Duration (lata); dla floaterow == ATR (time to next reset)
-    mod_duration    NUMERIC(8,4),    -- Modified Duration (lata); dla floaterow ~ ATR
-    computed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    fixing_date          DATE         NOT NULL,
+    isin                 VARCHAR(12)  NOT NULL,
+    bond_type            TEXT,
+    atm_years            NUMERIC(8,4),    -- Average Time to Maturity (lata)
+    atr_years            NUMERIC(8,4),    -- Average Time to Refixing  (lata)
+    mac_duration         NUMERIC(8,4),    -- Macaulay Duration (lata); dla floaterow == ATR (time to next reset)
+    mod_duration         NUMERIC(8,4),    -- Modified Duration (lata); dla floaterow ~ ATR
+    effective_yield_pct  NUMERIC(10,6),   -- YTM uzyty do duration. Fixed: fixing_yield z BondSpota.
+                                          -- IZ: real yield back-solved przez solve_ytm z price+real_coupon.
+                                          -- Floaters: NULL (Mac=Mod=ATR, nie potrzeba ytm).
+    computed_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (fixing_date, isin)
 );
+
+-- Migracja dla istniejacych instalacji (idempotentne)
+ALTER TABLE bondspot_analytics ADD COLUMN IF NOT EXISTS effective_yield_pct NUMERIC(10,6);
 
 CREATE INDEX IF NOT EXISTS idx_bondspot_analytics_isin_date
     ON bondspot_analytics (isin, fixing_date DESC);
@@ -82,13 +88,20 @@ RETURNS TABLE (
     fixing_price    NUMERIC
 )
 LANGUAGE sql STABLE AS $$
+    -- "Missing" = brak analytics row LUB existing row ale bez effective_yield_pct
+    -- (nowo dodana kolumna - pierwszy compute_analytics po migracji backfilluje).
     SELECT f.fixing_date, f.isin, f.fixing_yield, f.fixing_price
     FROM bondspot_fixing f
     LEFT JOIN bondspot_analytics a
       ON a.fixing_date = f.fixing_date
      AND a.isin = f.isin
+    LEFT JOIN bond_specs bs ON bs.isin = f.isin
     WHERE f.fixing_session = 2
-      AND a.fixing_date IS NULL
+      AND (
+          a.fixing_date IS NULL
+          OR (a.effective_yield_pct IS NULL
+              AND COALESCE(bs.coupon_kind, 'S') <> 'Z')  -- floaters nie maja yield
+      )
     ORDER BY f.fixing_date ASC, f.isin ASC
     LIMIT p_limit;
 $$;

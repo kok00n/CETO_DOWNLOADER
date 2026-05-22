@@ -229,6 +229,7 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
     atm_y = atm(f_date, m_date)
     atr_y = atr(f_date, m_date, i_date, is_floating, freq)
 
+    effective_ytm: float | None = None
     if is_floating:
         # Floaters (WZ/NZ): at each reset the bond reprices to par, so the
         # full rate sensitivity is concentrated in the time to next coupon
@@ -236,6 +237,8 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
         # be Mac / (1 + r/freq) but for sub-6M intervals at current rates
         # the discount factor differs from Mac by <0.1%, and we don't have
         # WIBOR/POLSTR fixings in the DB yet -> set Mod = Mac.
+        # effective_ytm stays None - concession for floaters uses DM space
+        # via SQL view (zero-coupon-equivalent from price), not stored here.
         mac, mod = atr_y, atr_y
     else:
         # Fixed-coupon / IZ / OK: prefer BondSpot's quoted YTM. If missing
@@ -264,6 +267,9 @@ def compute_metrics(spec: dict, fixing: dict) -> dict | None:
         "atr_years": round(atr_y, 4),
         "mac_duration": round(mac, 4) if mac is not None else None,
         "mod_duration": round(mod, 4) if mod is not None else None,
+        # YTM uzyty do duration (decimal -> percent). Dla fixed = BondSpot quote;
+        # dla IZ = back-solved real yield. SQL view uzywa do liczenia IZ concession.
+        "effective_yield_pct": round(effective_ytm * 100, 6) if effective_ytm is not None else None,
     }
 
 

@@ -112,7 +112,13 @@ FROM bond_auctions a;
 --  Nigdy nie bierzemy sesji 2 z dnia aukcji (jest PO aukcji - data leakage).
 --
 --  ZRÓŻNICOWANIE WG COUPON_KIND:
---   - fixed/IZ ('S','O','I'): concession w YTM space (yield_avg - fixing_yield)
+--   - fixed ('S','O'): concession w YTM space (yield_avg - prior fixing_yield)
+--     BondSpot quotuje nominal YTM, MF raportuje yield_avg - direct comparison.
+--   - inflation 'I' (IZ): concession w REAL yield space. MF raportuje real
+--     yield_avg dla IZ, ale BondSpot nie quotuje nominal yield dla linkerow.
+--     Uzywamy bondspot_analytics.effective_yield_pct - back-solved real yield
+--     z price + real_coupon przez compute_metrics. Lookup tylko z prior days
+--     (analytics liczone z EOD session 2, brak dla session 1 same-day).
 --   - floatery 'Z' (WZ/NZ): concession w DM space - MF nie raportuje yield_avg
 --     dla floaterow, BondSpot tez nie quotuje sensownego YTM. Liczymy implied
 --     DM "as-if zero-coupon" z czystej ceny do maturity:
@@ -141,23 +147,29 @@ WITH base AS (
 )
 SELECT
     b.*,
-    f.fixing_yield        AS prior_fixing_yield,
-    f.fixing_date         AS prior_fixing_date,
-    f.fixing_price        AS prior_fixing_price,
-    f.implied_dm_pct      AS prior_implied_dm_pct,
+    fx.fixing_yield        AS prior_fixing_yield,
+    fx.fixing_date         AS prior_fixing_date,
+    fx.fixing_price        AS prior_fixing_price,
+    fx.implied_dm_pct      AS prior_implied_dm_pct,
+    iz.effective_yield_pct AS prior_iz_real_yield_pct,
+    iz.fixing_date         AS prior_iz_fixing_date,
     -- Concession - per coupon_kind switch
     CASE
         WHEN b.bond_coupon_kind = 'Z'
-            THEN (b.auction_implied_dm_pct - f.implied_dm_pct) * 100
-        ELSE (b.yield_avg - f.fixing_yield) * 100
+            THEN (b.auction_implied_dm_pct - fx.implied_dm_pct) * 100
+        WHEN b.bond_coupon_kind = 'I'
+            THEN (b.yield_avg - iz.effective_yield_pct) * 100
+        ELSE (b.yield_avg - fx.fixing_yield) * 100
     END                   AS concession_bp,
     -- Stop concession (max yield/dm vs rynek) - dla Dutch tail=0 i tak
     CASE
-        WHEN b.bond_coupon_kind = 'Z'
-            THEN NULL  -- max DM nie ma znaczenia bo Dutch + no yield_max raportowany
-        ELSE (b.yield_max - f.fixing_yield) * 100
+        WHEN b.bond_coupon_kind IN ('Z', 'I')
+            THEN NULL  -- floaters/IZ: no separate stop metric
+        ELSE (b.yield_max - fx.fixing_yield) * 100
     END                   AS stop_concession_bp
 FROM base b
+-- LATERAL #1: standardowy lookup w bondspot_fixing dla non-IZ
+-- (Z uzywa fixing_price -> implied_dm; S/O uzywa fixing_yield direct)
 LEFT JOIN LATERAL (
     SELECT
         f0.fixing_yield,
@@ -174,9 +186,8 @@ LEFT JOIN LATERAL (
     FROM bondspot_fixing f0
     WHERE f0.isin = b.isin
       AND (
-          -- Dla floaterow potrzebujemy price (yield i tak NULL); dla reszty yield
           (b.bond_coupon_kind = 'Z' AND f0.fixing_price IS NOT NULL)
-          OR (b.bond_coupon_kind <> 'Z' AND f0.fixing_yield IS NOT NULL)
+          OR (b.bond_coupon_kind NOT IN ('Z', 'I') AND f0.fixing_yield IS NOT NULL)
       )
       AND (
           (f0.fixing_date = b.auction_date AND f0.fixing_session = 1)
@@ -184,7 +195,20 @@ LEFT JOIN LATERAL (
       )
     ORDER BY f0.fixing_date DESC, f0.fixing_session DESC
     LIMIT 1
-) f ON true;
+) fx ON b.bond_coupon_kind <> 'I'
+-- LATERAL #2: real yield z bondspot_analytics dla IZ (tylko prior days, bo
+-- analytics liczone tylko dla EOD session 2 - data leak przy same-day).
+LEFT JOIN LATERAL (
+    SELECT
+        a0.effective_yield_pct,
+        a0.fixing_date
+    FROM bondspot_analytics a0
+    WHERE a0.isin = b.isin
+      AND a0.effective_yield_pct IS NOT NULL
+      AND a0.fixing_date < b.auction_date
+    ORDER BY a0.fixing_date DESC
+    LIMIT 1
+) iz ON b.bond_coupon_kind = 'I';
 
 -- =====================================================================
 --  VIEW: ostatnie aukcje sprzedazowe (do raportu/dashboardu).
