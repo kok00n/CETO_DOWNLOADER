@@ -26,7 +26,10 @@ from lib.mf_xlsm import download_xlsm, find_xlsm_url  # noqa: E402
 from lib.supabase import upsert  # noqa: E402
 
 
-AUCTION_TYPE_OPS = {"AS", "AU", "AZ", "AO"}
+# MF auction operation types. SD = "Sprzedaza Dodatkowa" - nowsza nazwa (post-~2018)
+# top-upu primary auction, semantyka identyczna jak starsza AU. W chart 6
+# traktujemy SD jako AU (top-up) - to ta sama operacja.
+AUCTION_TYPE_OPS = {"AS", "AU", "SD", "AZ", "AO"}
 
 
 def _to_date(value) -> date | None:
