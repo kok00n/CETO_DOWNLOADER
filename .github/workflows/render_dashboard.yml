@@ -1,9 +1,13 @@
 name: Render dashboard to GitHub Pages
 
 on:
-  # Auto-run after Compute BondSpot analytics finishes (successfully)
+  # Auto-run po sukcesie ktoregokolwiek z compute workflow-ow:
+  # - "Compute BondSpot analytics" (daily 20:30 UTC)
+  # - "Evening refresh + analytics (auction days)" (Mon-Thu 18:00 UTC)
   workflow_run:
-    workflows: ["Compute BondSpot analytics"]
+    workflows:
+      - "Compute BondSpot analytics"
+      - "Evening refresh + analytics (auction days)"
     types: [completed]
   # Or manually from the Actions tab
   workflow_dispatch: {}

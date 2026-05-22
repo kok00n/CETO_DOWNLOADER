@@ -1,0 +1,79 @@
+name: Evening refresh + analytics (auction days)
+
+on:
+  schedule:
+    # 18:00 UTC = 19:00 CET (zima) / 20:00 CEST (lato)
+    # Pon-czw: dni z aukcjami obligacji (Wed AS, Thu AU/AS, Tue AZ/AO)
+    # i bonow skarbowych (typowo poniedzialki przez NBP).
+    # Aukcje konczacy do ~13 CET, MF publikuje wyniki w XLSM po poludniu;
+    # 19 lokalnie powinno juz miec wszystko swieze.
+    - cron: '0 18 * * 1-4'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Chroni przed nakladaniem sie z poranny refresh_bond_specs ani z manual
+# triggers; instalacje sa krotkie wiec serializacja jest OK.
+concurrency:
+  group: refresh-evening
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # === Step 1: refresh wszystkich tabel z MF ===
+      - name: Refresh bond_specs (static)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/refresh_bond_specs.py
+
+      - name: Refresh bond_outstanding (issuance + buybacks)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/refresh_bond_outstanding.py
+
+      - name: Refresh tbill data (specs + outstanding incl. auction_date)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/refresh_tbill_data.py
+
+      - name: Refresh bond_auctions (per-leg metrics)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/refresh_bond_auctions.py
+
+      # === Step 2: compute analytics ===
+      # Fixings first (DO UPDATE = merge), potem auction fallback (DO NOTHING
+      # = wypelnia tylko luki dla bondow bez BondSpot quote yet).
+      - name: Compute analytics (BondSpot fixings)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MAX_ROWS_PER_RUN: '200000'
+        run: python scripts/compute_analytics.py
+
+      - name: Compute auction-derived analytics (fallback)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/compute_auction_analytics.py
+
+      # Render dashboard odpala sie automatycznie po tym workflow przez
+      # workflow_run trigger w render_dashboard.yml.
