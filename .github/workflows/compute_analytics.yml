@@ -33,9 +33,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run compute_analytics.py
+      - name: Run compute_analytics.py (BondSpot fixings -> analytics)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MAX_ROWS_PER_RUN: ${{ inputs.max_rows || '200000' }}
         run: python scripts/compute_analytics.py
+
+      - name: Run compute_auction_analytics.py (auction fallback for new bonds)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        # Auctions -> analytics tylko dla (date, isin) bez fixing-based wiersza
+        # (ON CONFLICT DO NOTHING). Wypelnia okno auction -> first BondSpot fixing
+        # zeby brand-new serie nie wisialy bez duration w portfolio metrics.
+        run: python scripts/compute_auction_analytics.py

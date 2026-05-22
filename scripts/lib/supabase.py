@@ -23,12 +23,25 @@ _HEADERS = {
 }
 
 
-def upsert(table: str, rows: list[dict], on_conflict: str, batch_size: int = 500) -> int:
-    """Batch upsert rows via PostgREST. Returns number of rows posted."""
+def upsert(
+    table: str,
+    rows: list[dict],
+    on_conflict: str,
+    batch_size: int = 500,
+    ignore_duplicates: bool = False,
+) -> int:
+    """Batch upsert rows via PostgREST. Returns number of rows posted.
+
+    ignore_duplicates=False (default): ON CONFLICT DO UPDATE (merge).
+    ignore_duplicates=True: ON CONFLICT DO NOTHING - useful when the new row
+    is a fallback that should not overwrite already-present authoritative data
+    (e.g. auction-derived analytics that should yield to BondSpot fixing-derived).
+    """
     if not rows:
         return 0
     url = f"{SUPABASE_URL}/rest/v1/{table}?on_conflict={on_conflict}"
-    headers = {**_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"}
+    resolution = "ignore-duplicates" if ignore_duplicates else "merge-duplicates"
+    headers = {**_HEADERS, "Prefer": f"resolution={resolution},return=minimal"}
     posted = 0
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
