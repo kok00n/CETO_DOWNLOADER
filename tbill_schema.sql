@@ -9,9 +9,13 @@
 -- Schema jest idempotentny: tabele uzywaja CREATE IF NOT EXISTS, funkcje
 -- wymagaja DROP+CREATE bo Postgres nie pozwala zmienic return type.
 
+-- Drop order: views ktore zaleza od funkcji najpierw, potem funkcje.
+-- v_sovereign_debt_today odwoluje sie do sovereign_debt_at(date), wiec musi
+-- znikac przed nia (inaczej DROP FUNCTION rzuci "other objects depend on it").
+DROP VIEW IF EXISTS v_sovereign_debt_today;
+DROP FUNCTION IF EXISTS sovereign_debt_at(DATE);
 DROP FUNCTION IF EXISTS tbill_outstanding_at(VARCHAR, DATE);
 DROP FUNCTION IF EXISTS tbills_outstanding_at(DATE);
-DROP FUNCTION IF EXISTS sovereign_debt_at(DATE);
 
 -- =====================================================================
 --  TBILL SPECS - dane statyczne bonow skarbowych (refresh z MF .xls)
