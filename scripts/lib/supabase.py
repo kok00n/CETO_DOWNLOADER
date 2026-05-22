@@ -46,6 +46,12 @@ def upsert(
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
         r = _retry_post(url, headers=headers, json=batch)
+        if r.status_code >= 400:
+            # Surface PostgREST detail (most common: stale schema cache "could not
+            # find column X" -> need NOTIFY pgrst, 'reload schema').
+            body = r.text[:500] if r.text else "(empty body)"
+            print(f"  ! upsert {table} HTTP {r.status_code}: {body}", flush=True)
+            print(f"  ! first row sample: {batch[0] if batch else 'n/a'}", flush=True)
         r.raise_for_status()
         posted += len(batch)
     return posted
