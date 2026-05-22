@@ -110,25 +110,79 @@ FROM bond_auctions a;
 --    2) poprzednie dni, sesja 2 (EOD)
 --    3) poprzednie dni, sesja 1
 --  Nigdy nie bierzemy sesji 2 z dnia aukcji (jest PO aukcji - data leakage).
+--
+--  ZRÓŻNICOWANIE WG COUPON_KIND:
+--   - fixed/IZ ('S','O','I'): concession w YTM space (yield_avg - fixing_yield)
+--   - floatery 'Z' (WZ/NZ): concession w DM space - MF nie raportuje yield_avg
+--     dla floaterow, BondSpot tez nie quotuje sensownego YTM. Liczymy implied
+--     DM "as-if zero-coupon" z czystej ceny do maturity:
+--         implied_dm_pct = (POWER(100/price, 365.25/days_to_maturity) - 1) * 100
+--     To ignoruje WIBOR/POLSTR cashflows ale dla relative comparison
+--     (auction_DM vs market_DM tym samym wzorem) blad sie kasuje. Nie wymaga
+--     forward curve, tylko ceny ktore mamy w bond_auctions.price_avg i
+--     bondspot_fixing.fixing_price.
 -- =====================================================================
 CREATE OR REPLACE VIEW v_auction_with_market_context AS
+WITH base AS (
+    SELECT
+        am.*,
+        bs.coupon_kind AS bond_coupon_kind,
+        CASE
+            WHEN bs.coupon_kind = 'Z'
+                 AND am.price_avg IS NOT NULL AND am.price_avg > 0
+                 AND am.maturity_date IS NOT NULL
+                 AND am.maturity_date > am.auction_date
+            THEN (POWER(100.0 / am.price_avg,
+                        365.25 / (am.maturity_date - am.auction_date)) - 1.0) * 100.0
+            ELSE NULL
+        END AS auction_implied_dm_pct
+    FROM v_auction_metrics am
+    LEFT JOIN bond_specs bs ON bs.isin = am.isin
+)
 SELECT
-    m.*,
-    f.fixing_yield                                            AS prior_fixing_yield,
-    f.fixing_date                                             AS prior_fixing_date,
-    (m.yield_avg - f.fixing_yield) * 100                      AS concession_bp,
-    (m.yield_max - f.fixing_yield) * 100                      AS stop_concession_bp
-FROM v_auction_metrics m
+    b.*,
+    f.fixing_yield        AS prior_fixing_yield,
+    f.fixing_date         AS prior_fixing_date,
+    f.fixing_price        AS prior_fixing_price,
+    f.implied_dm_pct      AS prior_implied_dm_pct,
+    -- Concession - per coupon_kind switch
+    CASE
+        WHEN b.bond_coupon_kind = 'Z'
+            THEN (b.auction_implied_dm_pct - f.implied_dm_pct) * 100
+        ELSE (b.yield_avg - f.fixing_yield) * 100
+    END                   AS concession_bp,
+    -- Stop concession (max yield/dm vs rynek) - dla Dutch tail=0 i tak
+    CASE
+        WHEN b.bond_coupon_kind = 'Z'
+            THEN NULL  -- max DM nie ma znaczenia bo Dutch + no yield_max raportowany
+        ELSE (b.yield_max - f.fixing_yield) * 100
+    END                   AS stop_concession_bp
+FROM base b
 LEFT JOIN LATERAL (
-    SELECT fixing_yield, fixing_date
-    FROM bondspot_fixing
-    WHERE isin = m.isin
-      AND fixing_yield IS NOT NULL
+    SELECT
+        f0.fixing_yield,
+        f0.fixing_date,
+        f0.fixing_price,
+        CASE
+            WHEN b.bond_coupon_kind = 'Z'
+                 AND f0.fixing_price IS NOT NULL AND f0.fixing_price > 0
+                 AND b.maturity_date > f0.fixing_date
+            THEN (POWER(100.0 / f0.fixing_price,
+                        365.25 / (b.maturity_date - f0.fixing_date)) - 1.0) * 100.0
+            ELSE NULL
+        END AS implied_dm_pct
+    FROM bondspot_fixing f0
+    WHERE f0.isin = b.isin
       AND (
-          (fixing_date = m.auction_date AND fixing_session = 1)
-          OR fixing_date < m.auction_date
+          -- Dla floaterow potrzebujemy price (yield i tak NULL); dla reszty yield
+          (b.bond_coupon_kind = 'Z' AND f0.fixing_price IS NOT NULL)
+          OR (b.bond_coupon_kind <> 'Z' AND f0.fixing_yield IS NOT NULL)
       )
-    ORDER BY fixing_date DESC, fixing_session DESC
+      AND (
+          (f0.fixing_date = b.auction_date AND f0.fixing_session = 1)
+          OR f0.fixing_date < b.auction_date
+      )
+    ORDER BY f0.fixing_date DESC, f0.fixing_session DESC
     LIMIT 1
 ) f ON true;
 
