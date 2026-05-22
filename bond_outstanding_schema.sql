@@ -128,10 +128,24 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) a ON true
 LEFT JOIN LATERAL (
+    -- Outstanding query po effective_date = COALESCE(auction_date, change_date)
+    -- (analogicznie do v_bond_outstanding_by_type_events): aukcja przesuwa
+    -- balance na auction_date a nie settle_date, dzieki czemu portfolio
+    -- metryki w chart 1/2 odzwierciedlaja swieza emisje juz w dniu aukcji
+    -- (nie 2 dni pozniej). Dla recon/redemption (auction_date NULL) leci
+    -- change_date jak wczesniej.
+    --
+    -- balance_mln_pln jest pre-computed w refresh script po settle_date order;
+    -- dla typowych aukcji T+2 oba porzadki sa identyczne, wiec lookup po
+    -- auction_date z tego samego balance_mln_pln daje poprawny wynik. Edge
+    -- case (overlapping auction-vs-settle ordering) jest rzadki w polskich
+    -- aukcjach hurtowych i moze wprowadzic <0.01Y bias na chart 1/2 przez
+    -- kilka dni - akceptowalne.
     SELECT balance_mln_pln
     FROM bond_outstanding
-    WHERE isin = bs.isin AND change_date <= c.fixing_date
-    ORDER BY change_date DESC
+    WHERE isin = bs.isin
+      AND COALESCE(auction_date, change_date) <= c.fixing_date
+    ORDER BY COALESCE(auction_date, change_date) DESC
     LIMIT 1
 ) o ON true
 WHERE bs.maturity_date > c.fixing_date
