@@ -55,10 +55,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python scripts/refresh_bond_auctions.py
 
-      - name: Refresh reference rates (WIBOR6M / POLSTR / CPI ze stooq)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          STOOQ_API_KEY: ${{ secrets.STOOQ_API_KEY }}
-        run: python scripts/refresh_reference_rates.py
+      # Reference rates (WIBOR6M / POLSTR / CPI) odswiezane przez osobny
+      # workflow refresh_reference_rates.yml (1x/dzien pn-pt 18:00 UTC).

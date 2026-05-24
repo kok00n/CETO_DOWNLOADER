@@ -1,0 +1,42 @@
+name: Refresh reference rates (WIBOR6M / POLSTR / CPI ze stooq)
+
+on:
+  schedule:
+    # 18:00 UTC = 19:00 CET (zima) / 20:00 CEST (lato), Pon-Pt.
+    # Stooq aktualizuje fixingi po sesji polskiej (ok. 16-17 UTC), wiec 18
+    # ma swieze dane. Raz dziennie wystarczy - WIBOR/POLSTR sa daily fixingi,
+    # CPI monthly i tak nie zmienia sie co godzine.
+    - cron: '0 18 * * 1-5'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-reference-rates
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh reference rates from stooq
+        # continue-on-error - jesli stooq apikey wygasl, nie chcemy crashowac
+        # workflow (dashboard uzywa najnowszych dostepnych wartosci w DB).
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STOOQ_API_KEY: ${{ secrets.STOOQ_API_KEY }}
+        run: python scripts/refresh_reference_rates.py
