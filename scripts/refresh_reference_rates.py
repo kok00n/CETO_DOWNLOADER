@@ -1,19 +1,32 @@
-"""Refresh reference rates (WIBOR6M, POLSTR, CPI YoY Poland) z stooq.pl.
+"""Refresh reference rates + benchmark yields + FX z stooq.pl.
 
 Wymaga STOOQ_API_KEY env var. Klucz uzyskac jednorazowo przez captcha:
     https://stooq.pl/q/d/?s=plopln6m&get_apikey
 Wartosc stala - dodac jako GitHub secret STOOQ_API_KEY.
 
 Tickery i mapping:
+  Stopy procentowe (percent):
     plopln6m  -> WIBOR6M  (daily fixing, percent)
     plspln00  -> POLSTR   (overnight, percent)
     cpiypl.m  -> CPI_YOY  (Polska, monthly, percent)
+  Rentownosci benchmarkowe 10Y (percent):
+    10ply.b   -> PL10Y    (POLGB 10Y govt bond yield)
+    10dey.b   -> DE10Y    (Bund 10Y govt bond yield)
+    10usy.b   -> US10Y    (UST 10Y govt bond yield)
+  Kursy walutowe (poziom, nie percent - jednostka waluty/waluta):
+    eurpln    -> EURPLN
+    usdpln    -> USDPLN
+    eurusd    -> EURUSD
+
+UWAGA: kolumna value_pct trzyma zarowno procenty (stopy/yieldy) jak i
+poziomy FX. Interpretacja zalezna od series code (zob. komentarz w
+reference_rates_schema.sql).
 
 Stooq CSV format:
     Data,Otwarcie,Najwyzszy,Najnizszy,Zamkniecie[,Wolumen]
     YYYY-MM-DD,...,close[,vol]
 
-Uzywamy 'Zamkniecie' (close) jako bezposrednia wartosc procentowa.
+Uzywamy 'Zamkniecie' (close) jako wartosc EOD.
 
 Idempotentny - upsert ON CONFLICT DO UPDATE.
 """
@@ -33,9 +46,18 @@ from lib.supabase import upsert  # noqa: E402
 
 
 STOOQ_TICKERS = {
+    # Stopy procentowe (percent)
     "WIBOR6M": "plopln6m",
     "POLSTR":  "plspln00",
     "CPI_YOY": "cpiypl.m",
+    # Rentownosci benchmarkowe 10Y govt bond (percent)
+    "PL10Y":   "10ply.b",
+    "DE10Y":   "10dey.b",
+    "US10Y":   "10usy.b",
+    # FX - poziom (jednostka waluty bazowej / waluta kwotowana)
+    "EURPLN":  "eurpln",
+    "USDPLN":  "usdpln",
+    "EURUSD":  "eurusd",
 }
 
 UA = "Mozilla/5.0 (compatible; CETO-dashboard/1.0)"
@@ -90,9 +112,11 @@ def main() -> None:
             print(f"   ! empty data for {ticker}", flush=True)
             continue
         first, last = data[0], data[-1]
+        # FX series sa poziomami (np. 4.32), reszta to procenty
+        unit = "" if series in ("EURPLN", "USDPLN", "EURUSD") else "%"
         print(
             f"   -> {len(data)} rows ({first['date']} -> {last['date']}, "
-            f"latest={last['value']:.4f}%)",
+            f"latest={last['value']:.4f}{unit})",
             flush=True,
         )
         url = f"https://stooq.pl/q/?s={ticker}"
