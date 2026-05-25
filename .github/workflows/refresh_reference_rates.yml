@@ -1,4 +1,4 @@
-name: Refresh reference rates (WIBOR6M / POLSTR / CPI ze stooq)
+name: Refresh reference rates (stooq + bluegamma swap curve)
 
 on:
   schedule:
@@ -40,3 +40,12 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           STOOQ_API_KEY: ${{ secrets.STOOQ_API_KEY }}
         run: python scripts/refresh_reference_rates.py
+
+      - name: Refresh PLN swap curve from bluegamma
+        # continue-on-error - bluegamma to scraper Next.js SSR, fragile na zmiany.
+        # Jak fail, reszta dashboard'u dziala bez swap curve w LLM macro block.
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/refresh_swap_curve.py
