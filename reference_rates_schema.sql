@@ -7,9 +7,9 @@
 --     'POLSTR'  - POLSTR overnight (stooq: plspln00)
 --     'CPI_YOY' - CPI rok do roku Polska, monthly (stooq: cpiypl.m)
 --   Rentownosci benchmark 10Y govt bond (value_pct = percent yield):
---     'PL10Y'   - POLGB 10Y (stooq: 10ply.b)
---     'DE10Y'   - Bund 10Y (stooq: 10dey.b)
---     'US10Y'   - UST 10Y (stooq: 10usy.b)
+--     'PL10Y'   - POLGB 10Y (stooq: 10yply.b)
+--     'DE10Y'   - Bund 10Y (stooq: 10ydey.b)
+--     'US10Y'   - UST 10Y (stooq: 10yusy.b)
 --   FX (value_pct = poziom, jednostka waluty bazowej / waluta kwotowana):
 --     'EURPLN'  - EUR/PLN (stooq: eurpln, np. 4.3243)
 --     'USDPLN'  - USD/PLN (stooq: usdpln)

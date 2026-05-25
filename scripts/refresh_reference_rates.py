@@ -10,9 +10,9 @@ Tickery i mapping:
     plspln00  -> POLSTR   (overnight, percent)
     cpiypl.m  -> CPI_YOY  (Polska, monthly, percent)
   Rentownosci benchmarkowe 10Y (percent):
-    10ply.b   -> PL10Y    (POLGB 10Y govt bond yield)
-    10dey.b   -> DE10Y    (Bund 10Y govt bond yield)
-    10usy.b   -> US10Y    (UST 10Y govt bond yield)
+    10yply.b  -> PL10Y    (POLGB 10Y govt bond yield)
+    10ydey.b  -> DE10Y    (Bund 10Y govt bond yield)
+    10yusy.b  -> US10Y    (UST 10Y govt bond yield)
   Kursy walutowe (poziom, nie percent - jednostka waluty/waluta):
     eurpln    -> EURPLN
     usdpln    -> USDPLN
@@ -51,9 +51,9 @@ STOOQ_TICKERS = {
     "POLSTR":  "plspln00",
     "CPI_YOY": "cpiypl.m",
     # Rentownosci benchmarkowe 10Y govt bond (percent)
-    "PL10Y":   "10ply.b",
-    "DE10Y":   "10dey.b",
-    "US10Y":   "10usy.b",
+    "PL10Y":   "10yply.b",
+    "DE10Y":   "10ydey.b",
+    "US10Y":   "10yusy.b",
     # FX - poziom (jednostka waluty bazowej / waluta kwotowana)
     "EURPLN":  "eurpln",
     "USDPLN":  "usdpln",
