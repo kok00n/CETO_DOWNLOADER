@@ -19,10 +19,10 @@
 -- Interpretacja zalezna od series code (FX vs percent). Nazwa zostala dla
 -- backward-compat z istniejacymi RPC reference_rate_at/latest.
 --
--- Schema idempotentny.
-
-DROP FUNCTION IF EXISTS reference_rate_at(TEXT, DATE);
-DROP FUNCTION IF EXISTS reference_rate_latest(TEXT);
+-- Schema idempotentny - uzywa CREATE OR REPLACE bez wstepnego DROP.
+-- (DROP zlamalby idempotentnosc gdyby cos w innych schemach mialo
+-- dependency na reference_rate_at/latest, np. v_bond_servicing_cost
+-- w dashboard_rpcs.sql).
 
 CREATE TABLE IF NOT EXISTS reference_rates (
     series       TEXT NOT NULL,         -- 'WIBOR6M' | 'POLSTR' | 'CPI_YOY'
