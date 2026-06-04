@@ -4,12 +4,15 @@ on:
   # Auto-run po sukcesie ktoregokolwiek z compute workflow-ow:
   # - "Compute BondSpot analytics" (daily 20:30 UTC)
   # - "Evening refresh + analytics (auction days)" (Mon-Thu 18:00 UTC)
+  # Gate job (ponizej) decyduje czy faktycznie odpalic render - jak nie
+  # ma nowej aukcji od ostatniego renderu, skipujemy zeby nie placic za
+  # LLM commentary nadaremno.
   workflow_run:
     workflows:
       - "Compute BondSpot analytics"
       - "Evening refresh + analytics (auction days)"
     types: [completed]
-  # Or manually from the Actions tab
+  # Or manually from the Actions tab (workflow_dispatch override gate)
   workflow_dispatch: {}
 
 permissions:
@@ -23,9 +26,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  render:
-    # Skip if the triggering workflow failed
+  # ===== GATE: czy jest nowa aukcja od ostatniego renderu? =====
+  # Compares MAX(bond_auctions.auction_date) vs MAX(llm_commentary.snapshot_date
+  # WHERE section='final_auction_report'). Render leci tylko jak nowsza.
+  # workflow_dispatch zawsze przepuszcza (manual override do test/debug).
+  gate:
+    # Skip if the triggering workflow failed (same warunek co bylo na render)
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      has_new: ${{ steps.check.outputs.has_new }}
+      last_auction: ${{ steps.check.outputs.last_auction }}
+      last_report: ${{ steps.check.outputs.last_report }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install minimal deps
+        run: pip install requests
+
+      - id: check
+        name: Check for new auction since last report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/check_new_auction.py
+
+  render:
+    needs: gate
+    # Render tylko jak gate przeszedl LUB manual dispatch (override).
+    if: ${{ needs.gate.outputs.has_new == 'true' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -66,3 +101,17 @@ jobs:
 
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # ===== INFO: jak gate skipnal render =====
+  # Daje wyrazny log "skipped because no new auction" zamiast cichego skip.
+  skipped:
+    needs: gate
+    if: ${{ needs.gate.outputs.has_new == 'false' && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Render skipped
+        run: |
+          echo "::notice::Render skipped - no new auction since last report."
+          echo "Last auction:  ${{ needs.gate.outputs.last_auction }}"
+          echo "Last report:   ${{ needs.gate.outputs.last_report }}"
+          echo "Saved ~17 LLM Opus calls (~\$X per run)."
