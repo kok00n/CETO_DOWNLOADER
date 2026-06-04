@@ -3,11 +3,12 @@ name: Evening refresh + analytics (auction days)
 on:
   schedule:
     # 18:00 UTC = 19:00 CET (zima) / 20:00 CEST (lato)
-    # Pon-czw: dni z aukcjami obligacji (Wed AS, Thu AU/AS, Tue AZ/AO)
-    # i bonow skarbowych (typowo poniedzialki przez NBP).
+    # Pon-pt: dni z aukcjami obligacji (Wed AS, Thu AU/AS, Tue AZ/AO)
+    # i bonow skarbowych (typowo poniedzialki przez NBP). Piatek dolaczony
+    # bo MF czasem publikuje opoznione wyniki tygodnia (settlement/recon).
     # Aukcje konczacy do ~13 CET, MF publikuje wyniki w XLSM po poludniu;
     # 19 lokalnie powinno juz miec wszystko swieze.
-    - cron: '0 18 * * 1-4'
+    - cron: '0 18 * * 1-5'
   workflow_dispatch: {}
 
 permissions:

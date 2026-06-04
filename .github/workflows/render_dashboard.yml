@@ -3,7 +3,7 @@ name: Render dashboard to GitHub Pages
 on:
   # Auto-run po sukcesie ktoregokolwiek z compute workflow-ow:
   # - "Compute BondSpot analytics" (daily 20:30 UTC)
-  # - "Evening refresh + analytics (auction days)" (Mon-Thu 18:00 UTC)
+  # - "Evening refresh + analytics (auction days)" (Mon-Fri 18:00 UTC)
   # Gate job (ponizej) decyduje czy faktycznie odpalic render - jak nie
   # ma nowej aukcji od ostatniego renderu, skipujemy zeby nie placic za
   # LLM commentary nadaremno.
